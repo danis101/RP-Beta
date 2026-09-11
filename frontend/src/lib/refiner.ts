@@ -4,21 +4,15 @@ import { getContent } from './messages'
 
 /**
  * Prompt-refiner obrazu: zamienia kontekst rozmowy + kartę postaci na
- * czysty „positive prompt” w formacie akceptowanym przez mostek ComfyUI
- * (prefiks [STYLE: ...], opcjonalnie [FORMAT: ...]).
+ * czysty „positive prompt” w formacie akceptowanym przez mostek.
  *
- * Dlaczego osobny LLM: model czatu jest mocno obciążony rolą i często
- * „zapomina” o szczegółach wyglądu. Dedykowany (nawet mały) model ma
- * JEDNO zadanie — skleić spójny prompt — więc robi to pewniej.
+ * UWAGA o payloadzie: NIE wysyłamy całej karty jako JSON.stringify(card).
+ * Budujemy KOMPAKTOWY opis — tylko pola istotne dla wygenerowania obrazu.
  *
- * UWAGA o payloadzie:
- * NIE wysyłamy całej karty jako JSON.stringify(card). Karta zawiera:
- *   - portrait (base64 PNG, często setki KB / MB)
- *   - rawSpec (pełna kopia importu — duplikat wszystkiego)
- *   - characterBook.entries[].raw (kopia każdego wpisu)
- * Efekt: pojedyncze żądanie potrafi wygenerować ponad milion tokenów.
- * Dlatego budujemy KOMPAKTOWY opis — tylko pola, które realnie niosą
- * wygląd postaci i scenę.
+ * imageStyleDirective: opcjonalna wartość wybrana przez usera w menu
+ * konwersacji (⋮ → Styl obrazu). Wstawiana jako osobna sekcja w wiadomości
+ * do refinera. Refiner ma ja przepisać do tagu [STYLE: ...] na początku
+ * promptu. Zero walidacji — user wie co jego mostek akceptuje.
  */
 
 export interface RefineContext {
@@ -28,6 +22,11 @@ export interface RefineContext {
   history: ChatMessage[]
   /** Ile ostatnich wiadomości uwzględnić. */
   contextMessages: number
+  /**
+   * Wymuszony styl obrazu dla tej rozmowy (z listy `imageGenCustomStyles`
+   * w Settings). Pusty/undefined = brak wymuszenia.
+   */
+  imageStyleDirective?: string
 }
 
 /** Limit znaków na pojedyncze pole karty. */
@@ -52,7 +51,7 @@ function truncate(text: string | undefined, max: number): string {
 
 /**
  * Buduje kompaktowy opis karty — tylko to, co potrzebne do wygenerowania
- * wizerunku. Świadomie pomijamy: portrait, rawSpec, extensions, raw wpisów.
+ * wizerunku.
  */
 function buildCompactCard(card: CharacterCard): string {
   const parts: string[] = []
@@ -115,9 +114,8 @@ function buildHistoryText(
 }
 
 /**
- * Buduje wiadomości dla refinera: kompaktowy opis karty + ostatnie N wiadomości.
- * Zamiast JSON.stringify(card) (który potrafił puchnąć do milionów tokenów),
- * sklejamy tekstowy opis tylko z pól istotnych dla generacji obrazu.
+ * Buduje wiadomości dla refinera: kompaktowy opis karty + ostatnie N wiadomości
+ * + opcjonalny wymagany styl od usera.
  */
 export function buildImageRefinerMessages(
   ctx: RefineContext,
@@ -140,6 +138,17 @@ export function buildImageRefinerMessages(
   sections.push('')
   sections.push('OSTATNIE WIADOMOŚCI ROZMOWY (scena, strój, sytuacja):')
   sections.push(historyText || '(brak wiadomości)')
+
+  // Wymuszony styl od usera (menu konwersacji → Styl obrazu).
+  // Zero walidacji — user wie co jego mostek akceptuje.
+  if (ctx.imageStyleDirective && ctx.imageStyleDirective.trim()) {
+    sections.push('')
+    sections.push('## WYMAGANY STYL (od usera — MUSISZ to uwzględnić)')
+    sections.push('')
+    sections.push(`Umieść na SAMYM POCZĄTKU promptu tag: [STYLE: ${ctx.imageStyleDirective.trim()}]`)
+    sections.push('Użyj dokładnie tej wartości. Nie zmieniaj jej, nie tłumacz.')
+  }
+
   sections.push('')
   sections.push('Na podstawie powyższego napisz jeden spójny, szczegółowy pozytywny prompt do modelu tekst-do-obraz.')
 
@@ -148,8 +157,6 @@ export function buildImageRefinerMessages(
 
 /**
  * Woła refinera i zwraca czysty prompt (lub rzuca błąd).
- * `adapter` to osobna instancja OpenAIAdapter skonfigurowana profilem refinera
- * (albo profilem czatu jako fallback), `model` opcjonalnie nadpisuje model.
  */
 export async function refineImagePrompt(
   ctx: RefineContext,
@@ -160,8 +167,6 @@ export async function refineImagePrompt(
 ): Promise<string> {
   const [req] = buildImageRefinerMessages(ctx, systemPrompt)
 
-  // Diagnostyka — przy debugowaniu problemów z context overflow widać,
-  // ile realnie znaków leci do refinera (1 token ≈ 3-4 znaki).
   if (import.meta.env.DEV) {
     const totalChars = req.system.length + req.user.length
     console.debug(
@@ -184,3 +189,4 @@ export async function refineImagePrompt(
 
   return prompt
 }
+

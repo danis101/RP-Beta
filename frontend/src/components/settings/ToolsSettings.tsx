@@ -3,11 +3,6 @@ import { ChevronDown } from 'lucide-react'
 import { useI18n } from '../../i18n'
 import { useSettings } from '../../context/SettingsContext'
 
-/**
- * Zwijalna sekcja ustawień.
- * Zwijanie/rozwijanie (chevron) jest NIEZALEŻNE od włącznika (toggle) —
- * stan zwinięcia nie wpływa na enabled/disabled funkcji.
- */
 function CollapsibleSection({
   title,
   description,
@@ -62,10 +57,32 @@ function CollapsibleSection({
   )
 }
 
-/** Ustawienia narzędzi (web search, image generation). */
+/**
+ * Ustawienia narzędzi (web search, image generation).
+ *
+ * Sekcja Image Generation zawiera listę "Własne style obrazu" — wartości
+ * wybierane w dropdownie "Styl obrazu" w menu konwersacji (⋮). Puste = brak
+ * wyboru (refiner sam decyduje).
+ */
 export default function ToolsSettings() {
   const { t } = useI18n()
   const { settings, updateSettings } = useSettings()
+
+  // Lokalny draft listy styli: jeden per linia, zapisywany przy blur.
+  const [stylesDraft, setStylesDraft] = useState(
+    (settings.imageGenCustomStyles ?? []).join('\n'),
+  )
+
+  const commitStyles = () => {
+    const list = stylesDraft
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .filter((s, i, arr) => arr.indexOf(s) === i) // dedup
+    updateSettings({ imageGenCustomStyles: list })
+    // Zsynchronizuj draft z odfiltrowaną wersją
+    setStylesDraft(list.join('\n'))
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -212,6 +229,19 @@ export default function ToolsSettings() {
               </div>
 
               <div className="border-t border-edge pt-3">
+                <div className="text-[12.5px] text-[#b8bdd0]">{t('imageGenCustomStylesTitle')}</div>
+                <p className="mt-0.5 text-[11px] text-[#6a6a72]">{t('imageGenCustomStylesDesc')}</p>
+                <textarea
+                  value={stylesDraft}
+                  onChange={(e) => setStylesDraft(e.target.value)}
+                  onBlur={commitStyles}
+                  rows={5}
+                  placeholder={'Realistic\nAnime\nFantasy\nCartoon'}
+                  className="mt-2 w-full resize-y rounded-lg border border-[#2a2a31] bg-surface-dark px-3 py-2 font-mono text-[12.5px] leading-relaxed text-[#e8e8eb] outline-none focus:border-accent"
+                />
+              </div>
+
+              <div className="border-t border-edge pt-3">
                 <div className="text-[12.5px] text-[#b8bdd0]">{t('imageGenRefinerTitle')}</div>
                 <p className="mt-0.5 text-[11px] text-[#6a6a72]">{t('imageGenRefinerDesc')}</p>
 
@@ -236,8 +266,8 @@ export default function ToolsSettings() {
                   <textarea
                     value={settings.imageGenRefinerPrompt}
                     onChange={(e) => updateSettings({ imageGenRefinerPrompt: e.target.value })}
-                    rows={6}
-                    className="w-full resize-y rounded-lg border border-[#2a2a31] bg-surface-dark px-3 py-2 text-[13px] leading-relaxed text-[#e8e8eb] outline-none focus:border-accent"
+                    rows={10}
+                    className="w-full resize-y rounded-lg border border-[#2a2a31] bg-surface-dark px-3 py-2 font-mono text-[12px] leading-relaxed text-[#e8e8eb] outline-none focus:border-accent"
                   />
                 </div>
               </div>
@@ -248,3 +278,4 @@ export default function ToolsSettings() {
     </div>
   )
 }
+

@@ -9,7 +9,10 @@ import { uploadBlobFromBlob } from '../../services/sync'
  *          -> czysty positive prompt -> mostek ComfyUI -> blob na /blobs.
  *
  * `prompt` zapisujemy w toolCall, zeby mozna bylo zregenerowac obraz
- * bez wywolywania LLM ponownie (przycisk Regeneruj przy wiadomosci-obrazie).
+ * bez wywolywania LLM ponownie.
+ *
+ * `ctx.imageStyleDirective` (opcjonalne) — wymuszony styl wybrany przez
+ * usera w menu konwersacji. Przekazywany do refinera.
  */
 export const generateImageTool: ToolDef = {
   name: 'generate_image',
@@ -68,6 +71,7 @@ export const generateImageTool: ToolDef = {
           persona: ctx.persona,
           history: ctx.history,
           contextMessages,
+          imageStyleDirective: ctx.imageStyleDirective,
         },
         refinerPrompt,
         ctx.refinerAdapter,
@@ -122,3 +126,4 @@ export const generateImageTool: ToolDef = {
 }
 
 // === END OF FILE ===
+

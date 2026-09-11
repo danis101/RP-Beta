@@ -2,8 +2,7 @@ import type { ChatMessage, ToolCall, CharacterCard, Persona, APIToolCall } from 
 import type { ToolDefinition, ApiAdapter } from '../../services/api'
 
 /**
- * Kontekst wykonania narzędzia — wszystko, czego handler może potrzebować,
- * żeby narzędzia były wykonywalne niezależnie od przewodzenia w App.
+ * Kontekst wykonania narzędzia.
  */
 export interface ToolContext {
   character: CharacterCard
@@ -14,9 +13,14 @@ export interface ToolContext {
   refinerAdapter?: ApiAdapter
   /** Model, którego ma użyć refiner (nadpisuje profil). */
   refinerModel?: string
+  /**
+   * Wymuszony styl obrazu dla tej rozmowy (z `Conversation.imageStyleId`).
+   * Przekazywany do refinera jako twarda dyrektywa.
+   */
+  imageStyleDirective?: string
 }
 
-/** Ustawienia, które narzędzia mogą odczytać (przekazywane z AppSettings). */
+/** Ustawienia, które narzędzia mogą odczytać. */
 export interface ToolSettings {
   [key: string]: unknown
   webSearchUrl?: string
@@ -32,9 +36,6 @@ export interface ToolSettings {
 
 /**
  * Wynik wykonania narzędzia.
- * - `toolCall` – struktura do zapisania w wariancie wiadomości (renderowana w dymku).
- * - `message` – wiadomość systemowa do wstrzyknięcia w drugi przebieg LLM (np. wyniki wyszukiwania).
- * - `followUp` – czy po wykonaniu narzędzia należy ponownie wywołać LLM z wynikami.
  */
 export interface ToolResult {
   toolCall?: ToolCall
@@ -44,8 +45,6 @@ export interface ToolResult {
 
 /**
  * Pojedyncze narzędzie w rejestrze.
- * `declaration` to JSON Schema dla LLM (tool calling).
- * `run` wykonuje narzędzie i zwraca wynik.
  */
 export interface ToolDef {
   name: string
@@ -55,3 +54,4 @@ export interface ToolDef {
 
 /** Rejestr narzędzi. */
 export type ToolRegistry = Record<string, ToolDef>
+

@@ -10,26 +10,9 @@ import { useAuth } from './AuthContext'
  * Ustawienia aplikacji.
  *
  * Zrodlo prawdy: serwer (/settings). localStorage zostaje jako cache
- * per-user (klucz `rp-settings:<userId>`), zeby:
- *   - przyspieszyc start (bez "mrugania" domyslnymi wartosciami)
- *   - NIE przeciekac miedzy kontami na tej samej przegladarce
+ * per-user (klucz `rp-settings:<userId>`).
  *
- * Wczesniejsza wersja uzywala globalnego klucza `rp-settings` — to powodowalo
- * ze po zalogowaniu nowego usera jego cache startowy zawieral dane poprzedniego
- * (w tym profile API z apiKey). Teraz klucz jest per-user, a stary globalny
- * klucz jest jednorazowo czyszczony przy starcie (bez migracji - swiadomie,
- * zeby nie przypisac cudzych ustawien do pierwszego zalogowanego usera).
- *
- * Cykl zycia:
- *   1. Mount: wczytaj z `rp-settings:<userId>` (natychmiast, bez czekania)
- *   2. Rownolegle: fetch z serwera
- *      - sukces: podmienia stan (serwer > cache)
- *      - brak na serwerze (pierwszy login): wgrywa biezace (cache/defaults)
- *   3. Zmiany: setState lokalnie + PUT do serwera w tle (optimistic)
- *   4. WS event 'settings.changed': refreshFromServer (stabilny useCallback)
- *
- * Timer debounce jest czyszczony przy odmontowaniu providera (logout),
- * zeby opozniony zapis nie polecial juz po sesji.
+ * Cykl zycia: patrz komentarz w poprzedniej wersji pliku.
  */
 
 export interface AppSettings {
@@ -58,6 +41,15 @@ export interface AppSettings {
   imageGenRefinerProfileId: string
   imageGenRefinerPrompt: string
   imageGenContextMessages: number
+  /**
+   * Lista styli obrazu zdefiniowana przez usera. Pokazywana w dropdownie
+   * "Styl obrazu" w menu konwersacji (⋮). Wartosci sa przekazywane
+   * bez zmian do refinera jako `[STYLE: <wartość>]`.
+   *
+   * Pusta lista = dropdown nieaktywny, user nie moze wybrac stylu
+   * per-rozmowa (refiner sam decyduje).
+   */
+  imageGenCustomStyles: string[]
 }
 
 interface SettingsContextType {
@@ -103,13 +95,55 @@ function defaultSummarizerPrompt(): string {
   return `Jestes asystentem podsumowujacym historie rozmowy. Otrzymujesz dotychczasowe podsumowanie oraz nowe wiadomosci. Twoim zadaniem jest zaktualizowac podsumowanie, dodajac najwazniejsze wydarzenia, decyzje, fakty i zmiany w relacjach miedzy postaciami. Zachowaj zwiezlosc (max 200 slow) i trzymaj sie faktow. Nie dodawaj wlasnych komentarzy ani ocen.`
 }
 
+/**
+ * Default prompt dla refinera obrazu. Wersja generyczna — bez tagow
+ * specyficznych dla konkretnego backendu. Patrz `defaultSettings()` nizej
+ * na wyjasnienie dlaczego.
+ */
 function defaultImageGenRefinerPrompt(): string {
-  return `Jestes ekspertem od promptow do generowania obrazow. Otrzymujesz karte postaci (JSON) oraz fragment rozmowy. Twoim zadaniem jest napisac JEDEN spojny, szczegolowy pozytywny prompt do modelu tekst-do-obrazu, opisujacy postac dokladnie tak, jak wyglada w karcie (twarz, sylwetka, wlosy, oczy, stroj, cechy charakterystyczne) oraz biezaca scene z rozmowy.
+  return `Jestes ekspertem Image Prompt Engineer. Otrzymujesz karte postaci, personę uzytkownika oraz fragment rozmowy. Twoim zadaniem jest napisac JEDEN spojny, szczegolowy prompt wizualny, opisujacy postac dokladnie tak jak wyglada w karcie (twarz, sylwetka, wlosy, oczy, stroj, cechy charakterystyczne) oraz biezaca scene z rozmowy.
 
-Zwroc WYLACZNIE sam prompt, bez komentarzy. Rozpocznij go od tagu stylu, np.:
-[STYLE: Photorealistic] ...opis...
+## JĘZYK
 
-Jesli potrzebujesz, mozesz dodac [FORMAT: portrait|landscape|square]. Nie dodawaj nic poza promptem.`
+CALY prompt musi byc po ANGIELSKU. Nie pisz promptu po polsku.
+
+## TAGI (opcjonalne — jesli Twoj backend ich wymaga)
+
+Jesli Twoj mostek/model wymaga tagow wyboru stylu lub formatu na poczatku promptu (np. [STYLE: ...] [FORMAT: ...], [MODE: ...], albo podobnych), umiesc je na SAMYM POCZATKU, dokladnie w formacie wymaganym przez backend.
+
+Jesli backend nie wymaga tagow — pomin ten krok.
+
+## WYMAGANY STYL OD USERA
+
+Jesli w wiadomosci od systemu dostaniesz sekcje "WYMAGANY STYL", MUSISZ umiescic jej wartosc w tagu [STYLE: ...] na samym poczatku promptu. Nie zmieniaj wartosci, nie tlumacz jej.
+
+## HIERARCHIA SZCZEGOLOW (buduj prompt dokladnie w tej kolejnosci)
+
+a) Podmiot i akcja: szczegolowy opis postaci, poza, wyraz twarzy, ruch.
+b) Mikro-detale i faktury: tekstury (np. "coarse wool", "polished titanium", "visible skin pores"). Bielizna i warstwy spodnie w pelni zasloniete odzieza wierzchnia.
+c) Pierwszy plan i bezposrednie otoczenie: obiekty wokol postaci, interakcja swiatla z powierzchniami.
+d) Tlo i glebia: odlegle otoczenie, mgla atmosferyczna, perspektywa.
+e) Oswietlenie i atmosfera: fizyczne opisy swiatla, czastki atmosferyczne (kurz, para, deszcz).
+f) Medium i render (zaleznie od stylu):
+   - Realistic / Photorealistic: podaj korpus kamery, ogniskowa, przeslona, film.
+   - Anime / Fantasy / Cartoon / ilustracja: opisz medium artystyczne (np. "digital illustration, crisp vector lineart, smooth cel shading").
+g) Paleta i grading: harmonia kolorow, interakcja swiatla z kolorami.
+
+## ZASADA PRESENCE-ONLY (BEZ NEGACJI)
+
+NIGDY nie uzywaj slow "no", "without", "except" ani zadnych negacji do wykluczania elementow. Aby czegos uniknac, opisz jego zamiennik. Dla czystego wyniku bez znakow wodnych i tekstu zakotwicz prompt w profesjonalnym medium.
+
+## ZAKAZANE SLOWA
+
+NIE uzywaj pustych fraz typu "masterpiece", "ultra high quality", "8k".
+
+## SWIADOMOSC PRZESTRZENNA
+
+Wyraznie rozgranicz pierwszy plan, srodek i tlo.
+
+## WYJSCIE
+
+Zwroc WYLACZNIE sam prompt, gotowy do wyslania do mostka obrazow. Bez komentarzy, bez naglowkow sekcji, bez znacznikow markdown.`
 }
 
 /** Defaults dla nowego usera (swiezo po loginie, brak settings na serwerze). */
@@ -141,6 +175,7 @@ function defaultSettings(): AppSettings {
     imageGenRefinerProfileId: '',
     imageGenRefinerPrompt: defaultImageGenRefinerPrompt(),
     imageGenContextMessages: 6,
+    imageGenCustomStyles: [],
   }
 }
 
@@ -151,7 +186,6 @@ function defaultSettings(): AppSettings {
 function loadFromLocalStorage(userId: string): AppSettings | null {
   if (!userId) return null
 
-  // Jednorazowo usun stary globalny klucz, zeby nie wrocil przez inna sciezke.
   try {
     if (localStorage.getItem(LEGACY_SETTINGS_KEY) !== null) {
       localStorage.removeItem(LEGACY_SETTINGS_KEY)
@@ -190,6 +224,7 @@ function loadFromLocalStorage(userId: string): AppSettings | null {
       formattingColors: parsed.formattingColors ?? defaults.formattingColors,
       aiProfiles: aiProfiles.length > 0 ? aiProfiles : defaults.aiProfiles,
       activeAiProfileId: parsed.activeAiProfileId ?? aiProfiles[0]?.id ?? defaults.activeAiProfileId,
+      imageGenCustomStyles: Array.isArray(parsed.imageGenCustomStyles) ? parsed.imageGenCustomStyles : [],
     }
   } catch (e) {
     console.warn('Blad parsowania ustawien z localStorage:', e)
@@ -214,14 +249,11 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   )
   const [loading, setLoading] = useState(true)
 
-  // Ref na najswiezsze settings - do unikania stale closure w debounced save.
   const settingsRef = useRef(settings)
   settingsRef.current = settings
 
-  // Debounce timera PUT (zmiany szybkie - np. suwak - nie zapisujemy kazdej).
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  /** Zapis do localStorage pod kluczem tego usera. */
   const persistLocal = useCallback((next: AppSettings): AppSettings => {
     if (!userId) return next
     try {
@@ -232,7 +264,6 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     return next
   }, [userId])
 
-  /** Zapisz na serwer z debounce 500ms (chroni przed spamem przy suwakach). */
   const scheduleSave = (): void => {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
     saveTimerRef.current = setTimeout(() => {
@@ -243,8 +274,6 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     }, 500)
   }
 
-  // Cleanup: przy odmontowaniu (logout) anuluj zalegly zapis.
-  // Bez tego debounce mogl wystrzelic po sesji i wyslac PUT bez tokenu.
   useEffect(() => {
     return () => {
       if (saveTimerRef.current) {
@@ -254,8 +283,6 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  // Przy mount: fetch z serwera. Provider jest montowany tylko gdy user istnieje
-  // (patrz main.tsx → Root), wiec mount == swiezy login.
   useEffect(() => {
     let cancelled = false
     ;(async () => {
@@ -264,16 +291,17 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
         if (cancelled) return
 
         if (remote) {
-          // Serwer ma settings - uzywamy ich (zrodlo prawdy).
-          setSettings(persistLocal(remote))
+          setSettings(persistLocal({
+            ...defaultSettings(),
+            ...remote,
+            imageGenCustomStyles: Array.isArray(remote.imageGenCustomStyles)
+              ? remote.imageGenCustomStyles
+              : [],
+          }))
         } else {
-          // Serwer nie ma - wgrywamy to co mamy lokalnie.
-          // Uwaga: to sa WYLACZNIE ustawienia tego usera (cache per-user lub
-          // defaults), wiec nie ma ryzyka przecieku miedzy kontami.
           await settingsApi.save(settingsRef.current)
         }
       } catch (err) {
-        // Blad sieci - zostajemy z cache, sprobujemy pozniej.
         console.warn('Nie udalo sie pobrac ustawien z serwera:', err)
       } finally {
         if (!cancelled) setLoading(false)
@@ -284,17 +312,17 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     }
   }, [persistLocal])
 
-  /**
-   * Reczne dociagniecie z serwera (wywolywane przez WS listener w App).
-   * useCallback z dep [persistLocal] — stabilny dopoki userId sie nie zmieni,
-   * a userId zmienia sie tylko przez pelny remount providera (login/logout).
-   * Dzieki temu efekt App nie re-sie reconnectuje WS przy kazdym renderze.
-   */
   const refreshFromServer = useCallback(async (): Promise<void> => {
     try {
       const remote = await settingsApi.get()
       if (remote) {
-        setSettings(persistLocal(remote))
+        setSettings(persistLocal({
+          ...defaultSettings(),
+          ...remote,
+          imageGenCustomStyles: Array.isArray(remote.imageGenCustomStyles)
+            ? remote.imageGenCustomStyles
+            : [],
+        }))
       }
     } catch (err) {
       console.warn('Refresh ustawien z serwera nie powiodl sie:', err)

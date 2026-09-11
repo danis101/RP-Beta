@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { X, MoreVertical, Trash2, Check, X as XIcon, UserRound, Palette, BookOpen, Eye, Database, RotateCcw } from 'lucide-react'
+import { X, MoreVertical, Trash2, Check, X as XIcon, UserRound, Palette, BookOpen, Eye, Database, RotateCcw, Wand2 } from 'lucide-react'
 import type { CharacterCard, ChatMessage, Persona, StylePreset, Lorebook, MessageAttachment } from '../../types'
 import { useI18n } from '../../i18n'
 import { getContent } from '../../lib/messages'
@@ -9,6 +9,7 @@ import ChatBubble from './ChatBubble'
 import InputBar from './InputBar'
 import MessageActions from './MessageActions'
 import ConfirmDialog from './ConfirmDialog'
+import ImageStyleDialog from './ImageStyleDialog'
 
 interface ChatViewProps {
   character: CharacterCard
@@ -16,7 +17,6 @@ interface ChatViewProps {
   persona: Persona
   isTyping: boolean
   streamingText: string
-  /** Gdy ustawione, wiadomosc o tym id jest tymczasowo ukrywana i zastepowana streamem. */
   replacingMessageId?: string | null
   onSend: (text: string, attachments?: MessageAttachment[]) => void
   onStop: () => void
@@ -24,15 +24,14 @@ interface ChatViewProps {
   onDeleteMessage: (messageId: string) => void
   onRegenerate: (messageId: string) => void
   onSwitchVariant: (messageId: string, delta: -1 | 1) => void
-  /** Swipe w lewo: nastepny wariant lub regeneracja (na ostatnim). */
   onSwipeNext?: (messageId: string) => void
-  /** Swipe w prawo: poprzedni wariant. */
   onSwipePrev?: (messageId: string) => void
   onCloseSummary: () => void
   onDeleteConversation: () => void
   onPickPersona: (personaId: string | null) => void
   onPickStyle: (styleId: string | null) => void
   onToggleLorebook: (lorebookId: string) => void
+  onPickImageStyle: (styleId: string | undefined) => void
   onShowPrompt: () => void
   onManualSummarize: () => void
   onOpenMemoryEditor: () => void
@@ -41,7 +40,11 @@ interface ChatViewProps {
   availablePersonas: Persona[]
   availableStyles: StylePreset[]
   availableLorebooks: Lorebook[]
+  /** Lista styli obrazu z Settings (dla dialogu ImageStyleDialog). */
+  availableImageStyles: string[]
   activeStyleId?: string
+  /** Aktualnie wybrany styl obrazu dla tej rozmowy (undefined = auto). */
+  activeImageStyleId?: string
   activeLorebookIds: string[]
   summarizing?: boolean
   visionEnabled?: boolean
@@ -72,6 +75,7 @@ export default function ChatView({
   onPickPersona,
   onPickStyle,
   onToggleLorebook,
+  onPickImageStyle,
   onShowPrompt,
   onManualSummarize,
   onOpenMemoryEditor,
@@ -80,7 +84,9 @@ export default function ChatView({
   availablePersonas,
   availableStyles,
   availableLorebooks,
+  availableImageStyles,
   activeStyleId,
+  activeImageStyleId,
   activeLorebookIds,
   summarizing = false,
   visionEnabled = false,
@@ -92,13 +98,13 @@ export default function ChatView({
   const [personaMenuOpen, setPersonaMenuOpen] = useState(false)
   const [styleMenuOpen, setStyleMenuOpen] = useState(false)
   const [lorebookMenuOpen, setLorebookMenuOpen] = useState(false)
+  const [imageStyleOpen, setImageStyleOpen] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editDraft, setEditDraft] = useState('')
   const menuRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
-  // Tracking dotkniec dla swipe.
   const touchRef = useRef<{ id: string; x: number } | null>(null)
 
   const tokenContext: TokenContext = {
@@ -147,7 +153,6 @@ export default function ChatView({
         ? t('chatStatusAway')
         : t('chatStatusOffline')
 
-  // Streaming na dole tylko w trybie 'append' (nie przy regeneracji).
   const showBottomStreaming = !!streamingText && !replacingMessageId
 
   return (
@@ -159,6 +164,11 @@ export default function ChatView({
           <h1 className="truncate text-[14.5px] font-semibold text-[#f2f2f4]">{character.name}</h1>
           <p className="mt-1 truncate text-[11.5px] text-[#75757f]">
             {statusLabel} · {character.role ?? ''}
+            {activeImageStyleId && (
+              <span className="ml-2 rounded bg-[#1e2436] px-1.5 py-0.5 text-[10px] font-medium text-accent">
+                {t('imageStyleBadge')}: {activeImageStyleId}
+              </span>
+            )}
           </p>
         </div>
 
@@ -312,6 +322,26 @@ export default function ChatView({
                 </div>
               )}
 
+              {imageGenEnabled && (
+                <>
+                  <button
+                    onClick={() => {
+                      setMenuOpen(false)
+                      setImageStyleOpen(true)
+                    }}
+                    className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-[12.5px] text-[#b8bdd0] transition-colors hover:bg-surface-light"
+                  >
+                    <Wand2 size={14} />
+                    <span className="flex-1">{t('imageStyleMenuEntry')}</span>
+                    {activeImageStyleId && (
+                      <span className="shrink-0 rounded bg-[#1e2436] px-1.5 py-0.5 text-[10px] font-medium text-accent">
+                        {activeImageStyleId}
+                      </span>
+                    )}
+                  </button>
+                </>
+              )}
+
               <button
                 onClick={() => {
                   setMenuOpen(false)
@@ -397,13 +427,6 @@ export default function ChatView({
                 }
               }}
             >
-              {/*
-                Jeden wrapper na cala wiadomosc (bubble + actions).
-                `items-end` dla usera, `items-start` dla asystenta — kazde
-                dziecko (bubble, thinking, tool-call) jest wyrownane do
-                wlasciwej strony i ma swoja naturalna szerokosc (bez stretch).
-                max-w-[90%] cap na cala wiadomosc.
-              */}
               <div
                 className={`flex max-w-[90%] min-w-0 flex-col gap-1 ${
                   isUser ? 'items-end' : 'items-start'
@@ -428,7 +451,6 @@ export default function ChatView({
                     </div>
                   </div>
                 ) : isReplacing ? (
-                  /* Podczas regeneracji: stara wiadomosc ukryta, streaming w jej miejscu. */
                   <ChatBubble
                     message={{
                       id: `streaming-${msg.id}`,
@@ -460,7 +482,6 @@ export default function ChatView({
           )
         })}
 
-        {/* Streaming na dole tylko w trybie 'append' */}
         {showBottomStreaming && (
           <div className="flex justify-start">
             <div className="flex max-w-[90%] min-w-0 flex-col gap-1 items-start">
@@ -515,6 +536,15 @@ export default function ChatView({
             onDeleteConversation()
           }}
           onCancel={() => setConfirmDelete(false)}
+        />
+      )}
+
+      {imageStyleOpen && (
+        <ImageStyleDialog
+          current={activeImageStyleId}
+          availableStyles={availableImageStyles}
+          onSave={(styleId) => onPickImageStyle(styleId)}
+          onClose={() => setImageStyleOpen(false)}
         />
       )}
     </main>

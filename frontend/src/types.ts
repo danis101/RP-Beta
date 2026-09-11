@@ -251,6 +251,13 @@ export interface Conversation {
   longTermMemory: LongTermMemoryEntry[]
   lastSummarizedIndex: number
   /**
+   * Wybrany styl obrazu dla tej konkretnej rozmowy. Pusty = refiner decyduje
+   * sam. Wartosc pochodzi z listy zdefiniowanej przez usera w Settings
+   * (`imageGenCustomStyles`). Wysylana do refinera jako twarda dyrektywa
+   * `[STYLE: <wartość>]` — patrz `lib/refiner.ts`.
+   */
+  imageStyleId?: string
+  /**
    * Tombstones — ID wiadomosci ktore zostaly usuniete. Trzymamy je osobno
    * (zamiast flagi na wiadomosci), zeby:
    *   - merge nie przywracal usunietych wiadomosci z drugiego urzadzenia
