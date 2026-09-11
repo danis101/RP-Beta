@@ -1,14 +1,17 @@
 import { useState } from 'react'
 import { Search } from 'lucide-react'
-import type { CharacterCard, Conversation } from '../../types'
+import type { CharacterCard, Conversation, Persona } from '../../types'
 import { useI18n } from '../../i18n'
 import { getContent } from '../../lib/messages'
+import { substituteTokens } from '../../lib/tokens'
 import { useApiStatus, type ApiStatus } from '../../lib/apiStatus'
 import Avatar from '../ui/Avatar'
 
 interface ChatListProps {
   characters: CharacterCard[]
   conversations: Conversation[]
+  personas: Persona[]
+  defaultPersonaId: string
   activeId: string
   onSelect: (id: string) => void
 }
@@ -27,12 +30,32 @@ const apiDot: Record<ApiStatus, { color: string; labelKey: string }> = {
   unknown: { color: 'bg-[#3a3a42]', labelKey: 'apiStatusChecking' },
 }
 
-export default function ChatList({ characters, conversations, activeId, onSelect }: ChatListProps) {
+export default function ChatList({
+  characters,
+  conversations,
+  personas,
+  defaultPersonaId,
+  activeId,
+  onSelect,
+}: ChatListProps) {
   const { t } = useI18n()
   const [query, setQuery] = useState('')
   const apiStatus = useApiStatus()
 
   const getCharacter = (id: string) => characters.find((c) => c.id === id)
+
+  /**
+   * Persona uzywana w danej konwersacji — analogicznie do logiki w App.tsx
+   * (activePersona). Dla kazdej rozmowy osobno, bo kazda moze miec inna
+   * personę (Conversation.personaId ma priorytet nad default z settings).
+   */
+  const getPersonaFor = (conv: Conversation): Persona | undefined => {
+    const defaultPersona = personas.find((p) => p.id === defaultPersonaId) ?? personas[0]
+    if (conv.personaId) {
+      return personas.find((p) => p.id === conv.personaId) ?? defaultPersona
+    }
+    return defaultPersona
+  }
 
   const filtered = conversations.filter((conv) => {
     const character = getCharacter(conv.characterId)
@@ -64,6 +87,17 @@ export default function ChatList({ characters, conversations, activeId, onSelect
           const last = conv.messages[conv.messages.length - 1]
           const isActive = conv.id === activeId
 
+          // Podstaw tokeny ({{user}}, {{char}}, etc.) w preview uzywajac
+          // persony TEJ konwersacji — spojne z ChatBubble.
+          const persona = getPersonaFor(conv)
+          const lastPreview = last
+            ? substituteTokens(getContent(last), {
+                charName: character.name,
+                userName: persona?.name ?? 'User',
+                personaName: persona?.name ?? 'User',
+              })
+            : t('chatNoMessages')
+
           return (
             <button
               key={conv.id}
@@ -89,12 +123,15 @@ export default function ChatList({ characters, conversations, activeId, onSelect
                 <div className="flex items-baseline justify-between">
                   <span className="truncate text-sm font-semibold text-[#f2f2f4]">{character.name}</span>
                   <span className="ml-2 shrink-0 text-[11px] text-[#75757f]">
-                    {last ? new Date(last.timestamp).toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }) : ''}
+                    {last
+                      ? new Date(last.timestamp).toLocaleTimeString('pl-PL', {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })
+                      : ''}
                   </span>
                 </div>
-                <p className="mt-0.5 truncate text-[12.5px] text-[#9a9aa3]">
-                  {last ? getContent(last) : t('chatNoMessages')}
-                </p>
+                <p className="mt-0.5 truncate text-[12.5px] text-[#9a9aa3]">{lastPreview}</p>
               </div>
 
               {conv.unread > 0 && (
