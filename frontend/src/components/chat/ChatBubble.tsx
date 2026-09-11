@@ -21,15 +21,17 @@ interface ChatBubbleProps {
  *   2. Column z max-w i items-end/items-start — kazde dziecko dopasowuje sie
  *      do wlasnej zawartosci i jest wyrownane do wlasciwej strony.
  *
- * Kluczowe: BEZ `min-w-0` na wewnetrznym wrapperze. `min-w-0` pozwalal
- * flexowi zwezac bubble ponizej naturalnej szerokosci tekstu, przez co nawet
- * krotkie wiadomosci ("kontynuacja jasne") lamaly sie na dwie linie.
+ * Kluczowe dla krotkich wiadomosci: bubble ma `w-max max-w-full`.
+ *   - `w-max`     = max-content (naturalna szerokosc tekstu, NIE zweza sie)
+ *   - `max-w-full`= cap do szerokosci wrappera (max-w-[90%] rodzica)
+ *
+ * UWAGA: NIE uzywac `w-fit` (= fit-content) — potrafi zejsc do min-content
+ * (szerokosc najdluzszego slowa) gdy flex jest zwezony, przez co krotkie
+ * wiadomosci ("jeszcze jeden") lamia sie na dwie linie mimo miejsca.
  *
  * Tool call image:
- *   - GDY jest tekst (postac cos pisze + generuje obraz) -> obrazek w dymku,
- *     zaraz pod tekstem — wizualnie czesc odpowiedzi postaci.
- *   - GDY nie ma tekstu (rozdzka - user sam generuje) -> obrazek pod dymkiem,
- *     samodzielny element bez tla.
+ *   - GDY jest tekst (postac pisze + generuje obraz) -> obrazek w dymku.
+ *   - GDY nie ma tekstu (rozdzka - user generuje sam) -> obrazek poza dymkiem.
  */
 export default function ChatBubble({ message, tokens }: ChatBubbleProps) {
   const { settings } = useSettings()
@@ -56,8 +58,8 @@ export default function ChatBubble({ message, tokens }: ChatBubbleProps) {
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div className={`flex max-w-[85%] flex-col gap-1.5 ${isUser ? 'items-end' : 'items-start'}`}>
-        {/* Thinking section */}
+      <div className={`flex max-w-[90%] flex-col gap-1.5 ${isUser ? 'items-end' : 'items-start'}`}>
+        {/* Thinking section — pelna szerokosc wrappera */}
         {showThinking && (
           <div className="w-full overflow-hidden rounded-xl border border-[#252a3d] bg-surface">
             <button
@@ -78,7 +80,7 @@ export default function ChatBubble({ message, tokens }: ChatBubbleProps) {
         {/* Message content + obrazek w dymku (gdy jest tekst) */}
         {(rawContent || (imageTool && imageTool.status === 'generating' && !isUser)) && rawContent ? (
           <div
-            className={`w-fit whitespace-pre-wrap break-words px-3.5 py-2.5 text-[13.5px] leading-relaxed ${
+            className={`w-max max-w-full whitespace-pre-wrap break-words px-3.5 py-2.5 text-[13.5px] leading-relaxed ${
               isUser
                 ? 'rounded-2xl rounded-br-md bg-accent text-white'
                 : 'rounded-2xl rounded-bl-md border border-edge bg-surface-light text-[#e8e8eb]'
@@ -236,7 +238,6 @@ function ImageInBubble({
 
 /**
  * Sam obrazek (bez tekstu) - poza dymkiem, samodzielny element.
- * Tak wygladaja obrazy wygenerowane rozdzka (user generuje sam).
  */
 function ImageStandalone({
   toolCall,
