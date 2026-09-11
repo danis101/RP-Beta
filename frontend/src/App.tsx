@@ -593,6 +593,7 @@ export default function App() {
         },
         refinerAdapter,
         refinerModel: refinerProfile?.model,
+        imageStyleDirective: activeConversation?.imageStyleId,
       }
 
       setToolRunning(true)
@@ -1070,6 +1071,13 @@ export default function App() {
     persistConversation(updated)
   }
 
+  const handlePickImageStyle = (styleId: string | undefined) => {
+    if (!activeConversation) return
+    const updated: Conversation = { ...activeConversation, imageStyleId: styleId }
+    setConversations((prev) => prev.map((c) => (c.id === activeId ? updated : c)))
+    persistConversation(updated)
+  }
+
   const handleToggleLorebook = (lorebookId: string) => {
     if (!activeConversation) return
     const current = activeConversation.lorebookIds ?? []
@@ -1368,7 +1376,13 @@ export default function App() {
 
     try {
       const prompt = await refineImagePrompt(
-        { character: activeCharacter, persona: activePersona, history: activeConversation.messages, contextMessages },
+        {
+          character: activeCharacter,
+          persona: activePersona,
+          history: activeConversation.messages,
+          contextMessages,
+          imageStyleDirective: activeConversation.imageStyleId,
+        },
         settings.imageGenRefinerPrompt,
         refinerAdapter,
         refinerProfile?.model,
@@ -1521,7 +1535,9 @@ export default function App() {
               availablePersonas={personas}
               availableStyles={stylePresets}
               availableLorebooks={lorebooks}
+              availableImageStyles={settings.imageGenCustomStyles}
               activeStyleId={activeStyleId}
+              activeImageStyleId={activeConversation.imageStyleId}
               activeLorebookIds={activeConversation.lorebookIds ?? []}
               isTyping={isTyping || toolRunning}
               streamingText={streamingText}
@@ -1545,6 +1561,7 @@ export default function App() {
               onPickPersona={handlePickPersona}
               onPickStyle={handlePickStyle}
               onToggleLorebook={handleToggleLorebook}
+              onPickImageStyle={handlePickImageStyle}
               onShowPrompt={() => setPromptViewerOpen(true)}
               onManualSummarize={handleManualSummarize}
               onOpenMemoryEditor={() => setMemoryEditorOpen(true)}
@@ -1610,3 +1627,16 @@ export default function App() {
 }
 
 // === END OF FILE ===
+
+```
+
+Podmień `frontend/src/App.tsx`. Push, pull, `docker compose up -d --build`.
+
+**Co jest w tym pliku (wszystkie 4 zmiany już wklejone):**
+
+1. `handlePickImageStyle` — obok `handlePickStyle` (linia ~530)
+2. `imageStyleDirective: activeConversation?.imageStyleId` w `toolCtx` (finishCompletion)
+3. `imageStyleDirective: activeConversation.imageStyleId` w `handleGenerateImage` → `refineImagePrompt`
+4. `<ChatView>` — dodane `availableImageStyles`, `activeImageStyleId`, `onPickImageStyle`
+
+Już nie trzeba nic dopisywać ręcznie. Jeden paste, build przejdzie.
