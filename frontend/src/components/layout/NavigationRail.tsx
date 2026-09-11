@@ -1,4 +1,4 @@
-import { MessageSquare, Users, Settings, BookOpen, LogOut, ShieldCheck } from 'lucide-react'
+import { MessageSquare, Users, Settings, BookOpen, LogOut, ShieldCheck, RefreshCw } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useI18n } from '../../i18n'
 import type { Persona } from '../../types'
@@ -18,18 +18,26 @@ interface NavigationRailProps {
   onNavigate: (view: AppView) => void
   persona: Persona
   onOpenPersonaManager: () => void
+  onManualRefresh?: () => void
+  refreshing?: boolean
 }
 
 /**
  * Lewa ramka nawigacji.
- * U góry: persona, Rozmowy, Karty postaci.
- * Na dole: Lorebooki, Ustawienia, [Admin], Wyloguj.
+ * U gory: persona, Rozmowy, Karty postaci.
+ * Na dole: Lorebooki, Ustawienia, [Odswiez], [Admin], Wyloguj.
+ *
+ * "Odswiez" to manualny reload z serwera - przydatne zanim mamy WebSocket
+ * live sync (Etap 3.5b). Klikniecie dociaga wszystkie 5 list i podmienia
+ * stan w UI, zeby zobaczyc zmiany z innych urzadzen bez F5.
  */
 export default function NavigationRail({
   activeView,
   onNavigate,
   persona,
   onOpenPersonaManager,
+  onManualRefresh,
+  refreshing = false,
 }: NavigationRailProps) {
   const { t } = useI18n()
   const { user, logout } = useAuth()
@@ -66,7 +74,7 @@ export default function NavigationRail({
 
   return (
     <nav className="flex w-16 flex-col items-center gap-2 border-r border-edge bg-surface py-4">
-      {/* Persona u góry */}
+      {/* Persona u gory */}
       <button
         onClick={onOpenPersonaManager}
         title={persona?.name ?? 'Persona'}
@@ -80,7 +88,19 @@ export default function NavigationRail({
       <div className="mt-auto flex flex-col items-center gap-2">
         {bottomItems.map(renderButton)}
 
-        {/* Panel admina — tylko dla adminów. Hash route: #/admin */}
+        {/* Manual refresh z serwera - ikona sie kreci podczas pobierania. */}
+        {onManualRefresh && (
+          <button
+            title={t('navRefresh')}
+            onClick={onManualRefresh}
+            disabled={refreshing}
+            className="flex h-11 w-11 items-center justify-center rounded-xl text-[#8a8a94] transition-colors hover:bg-surface-light hover:text-white disabled:opacity-50"
+          >
+            <RefreshCw size={20} className={refreshing ? 'animate-spin' : ''} />
+          </button>
+        )}
+
+        {/* Panel admina - tylko dla adminow. Hash route: #/admin */}
         {user?.isAdmin && (
           <button
             title={t('navAdmin')}

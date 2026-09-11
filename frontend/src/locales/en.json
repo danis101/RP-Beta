@@ -3,6 +3,7 @@
   "navCards": "Character Cards",
   "navSettings": "Settings",
   "navAdmin": "Admin panel",
+  "navRefresh": "Refresh from server",
   "authTitle": "Sign in",
   "authSubtitle": "Connect to the sync server",
   "authUsername": "Username",

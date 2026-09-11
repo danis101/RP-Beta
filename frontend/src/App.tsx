@@ -3,6 +3,7 @@ import type { CharacterCard, ChatMessage, Conversation, Persona, LongTermMemoryE
 import { MockAdapter, OpenAIAdapter, type ApiAdapter, type OpenAIMessage } from './services/api'
 import { charactersApi, personasApi, conversationsApi, stylesApi, lorebooksApi } from './services/sync'
 import { ConflictError } from './services/sync/client'
+import { mergeConversations } from './lib/conversationMerge'
 import { buildSystemPrompt } from './lib/prompt'
 import { buildStyledSystemPrompt, getStyledChatInjections } from './lib/style'
 import { activateLorebooks } from './lib/lorebook'
@@ -30,7 +31,6 @@ import LongTermMemoryEditor from './components/chat/LongTermMemoryEditor'
 import AdminPanel from './components/admin/AdminPanel'
 import ConflictBanners from './components/chat/ConflictBanners'
 
-/** Buduje pierwsza wiadomosc asystenta z wariantow first_mes + alternate_greetings. */
 function buildFirstMessage(card: CharacterCard): ChatMessage[] {
   const variants: Array<{ content: string }> = []
 
@@ -61,6 +61,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [ready, setReady] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
   const [characters, setCharacters] = useState<CharacterCard[]>([])
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [personas, setPersonas] = useState<Persona[]>([])
@@ -130,7 +131,32 @@ export default function App() {
     }
   }, [activeProfile])
 
-  // --- Wczytanie danych z serwera ---
+  /**
+   * Wczytuje wszystkie encje z serwera. Uzywane przy pierwszym starcie
+   * i przy manualnym "Odswiez z serwera" w nav rail.
+   */
+  const reloadAll = async (opts: { silent?: boolean } = {}): Promise<void> => {
+    if (!opts.silent) setRefreshing(true)
+    try {
+      const [chars, convs, pers, styles, lbs] = await Promise.all([
+        charactersApi.list(),
+        conversationsApi.list(),
+        personasApi.list(),
+        stylesApi.list(),
+        lorebooksApi.list(),
+      ])
+      setCharacters(chars)
+      setConversations(convs)
+      setPersonas(pers)
+      setStylePresets(styles)
+      setLorebooks(lbs)
+      return
+    } finally {
+      if (!opts.silent) setRefreshing(false)
+    }
+  }
+
+  // Pierwsze wczytanie danych z serwera.
   useEffect(() => {
     let cancelled = false
     ;(async () => {
@@ -165,6 +191,15 @@ export default function App() {
     }
   }, [])
 
+  /** Manualny refresh z nav rail - pokazuje spinner i dociaga wszystko. */
+  const handleManualRefresh = async () => {
+    try {
+      await reloadAll()
+    } catch (err) {
+      console.error('Manual refresh nie powiodl sie:', err)
+    }
+  }
+
   // --- Nawigacja ---
   const handleNavigate = (nextView: AppView) => {
     if (nextView === 'chat' && view === 'chat') {
@@ -192,9 +227,9 @@ export default function App() {
         lastSummarizedIndex: -1,
       }
       try {
-        await conversationsApi.update(newConv)
-        setConversations((prev) => [...prev, newConv])
-        setActiveId(newConv.id)
+        const saved = await conversationsApi.update(newConv)
+        setConversations((prev) => [...prev, saved])
+        setActiveId(saved.id)
       } catch (err) {
         console.error('Nie udalo sie utworzyc konwersacji:', err)
         return
@@ -224,53 +259,73 @@ export default function App() {
     .filter((l): l is Lorebook => Boolean(l))
 
   /**
-   * Zapisuje konwersacje do serwera z optimistic lockingiem.
+   * Zapisuje konwersacje do serwera z optimistic lockingiem i AUTO-MERGE.
    *
-   * Sukces: cicho aktualizujemy lokalny stan (nic nie robimy - optimistic
-   * update juz zrobiony przez setState przed wywolaniem).
+   * Sukces (200): cicho aktualizujemy _serverUpdatedAt lokalnie.
    *
    * Konflikt (409): ktos zmodyfikowal konwersacje na innym urzadzeniu.
-   * Pokazujemy banner z przyciskiem "Odswiez" - user decyduje czy
-   * przyjac wersje z serwera (traci swoje lokalne zmiany) czy zamknac.
+   * Scalamy wiadomosci (nasze nowe + z serwera) i ponawiamy zapis RAZ.
+   * Nie ma utraty danych, nie ma bannera.
+   *
+   * Konflikt przy retry (409 drugi raz): bardzo rzadkie. Pokazujemy banner
+   * z Odswiez (wersja z serwera wygrywa).
+   *
+   * Usuniete na innym urzadzeniu (current=null): banner informacyjny.
    */
   const persistConversation = (conversation: Conversation) => {
-    void conversationsApi
-      .update(conversation)
-      .then((saved) => {
-        // Aktualizujemy _serverUpdatedAt w lokalnym stanie, zeby kolejny
-        // save mial swiezy timestamp i nie wywalal falszywego konfliktu.
-        setConversations((prev) =>
-          prev.map((c) =>
-            c.id === saved.id ? { ...c, _serverUpdatedAt: saved._serverUpdatedAt, _serverCreatedAt: saved._serverCreatedAt } : c,
-          ),
-        )
-      })
-      .catch((err) => {
-        if (err instanceof ConflictError) {
-          const current = err.current as Conversation | null
-          if (!current) {
-            // Encja zostala usunieta na innym urzadzeniu.
-            pushBanner({
-              title: t('conflictDeletedTitle'),
-              description: t('conflictDeletedDesc'),
-              onRefresh: () => {
-                setConversations((prev) => prev.filter((c) => c.id !== conversation.id))
-              },
-            })
-            return
-          }
-          pushBanner({
-            title: t('conflictChangedTitle'),
-            description: t('conflictChangedDesc'),
-            onRefresh: () => {
-              // Przyjmujemy wersje z serwera.
-              setConversations((prev) => prev.map((c) => (c.id === current.id ? current : c)))
-            },
-          })
-          return
-        }
+    void persistConversationInternal(conversation, false)
+  }
+
+  const persistConversationInternal = async (conversation: Conversation, isRetry: boolean): Promise<void> => {
+    try {
+      const saved = await conversationsApi.update(conversation)
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === saved.id
+            ? { ...c, _serverUpdatedAt: saved._serverUpdatedAt, _serverCreatedAt: saved._serverCreatedAt }
+            : c,
+        ),
+      )
+      return
+    } catch (err) {
+      if (!(err instanceof ConflictError)) {
         console.warn('Zapis konwersacji do serwera nie powiodl sie:', err)
-      })
+        return
+      }
+
+      const remote = err.current as Conversation | null
+
+      if (!remote) {
+        // Encja zostala usunieta na innym urzadzeniu.
+        pushBanner({
+          title: t('conflictDeletedTitle'),
+          description: t('conflictDeletedDesc'),
+          onRefresh: () => {
+            setConversations((prev) => prev.filter((c) => c.id !== conversation.id))
+          },
+        })
+        return
+      }
+
+      if (isRetry) {
+        // Retry tez sie nie powiodl - bardzo rzadkie (dwa konflikty pod rzad).
+        // Pokazujemy banner, wersja z serwera wygrywa.
+        pushBanner({
+          title: t('conflictChangedTitle'),
+          description: t('conflictChangedDesc'),
+          onRefresh: () => {
+            setConversations((prev) => prev.map((c) => (c.id === remote.id ? remote : c)))
+          },
+        })
+        return
+      }
+
+      // Auto-merge: nasze nowe wiadomosci + historia z serwera.
+      // Zero utraty danych, cichy retry.
+      const merged = mergeConversations(conversation, remote)
+      setConversations((prev) => prev.map((c) => (c.id === merged.id ? merged : c)))
+      await persistConversationInternal(merged, true)
+    }
   }
 
   const handleStop = () => {
@@ -1182,6 +1237,8 @@ export default function App() {
           onNavigate={handleNavigate}
           persona={activePersona ?? { id: '', name: '?' }}
           onOpenPersonaManager={() => setPersonaManagerOpen(true)}
+          onManualRefresh={handleManualRefresh}
+          refreshing={refreshing}
         />
         <AdminPanel />
       </div>
@@ -1196,6 +1253,8 @@ export default function App() {
         onNavigate={handleNavigate}
         persona={activePersona ?? { id: '', name: '?' }}
         onOpenPersonaManager={() => setPersonaManagerOpen(true)}
+        onManualRefresh={handleManualRefresh}
+        refreshing={refreshing}
       />
 
       {view === 'chat' ? (

@@ -3,6 +3,7 @@
   "navCards": "Karty postaci",
   "navSettings": "Ustawienia",
   "navAdmin": "Panel administratora",
+  "navRefresh": "Odswiez z serwera",
   "authTitle": "Zaloguj sie",
   "authSubtitle": "Polacz sie z serwerem synchronizacji",
   "authUsername": "Nazwa uzytkownika",
