@@ -121,3 +121,42 @@ export const adminMiddleware = createMiddleware<AppEnv>(async (c, next) => {
   }
   await next()
 })
+
+/**
+ * Auth middleware dla endpointów proxy (/llm-proxy, /searxng-proxy, /images-proxy).
+ *
+ * Dlaczego osobny nagłówek:
+ *   Proxy przekazuje żądania do zewnętrznych usług (LM Studio, SearXNG, mostek
+ *   obrazów). Nagłówek `Authorization` jest tam używany do KLUCZA API tych usług
+ *   — nie możemy go zająć na JWT sync. Dlatego JWT idzie w dedykowanym nagłówku
+ *   `X-RP-Auth: Bearer <token>`, który proxy zużywa i nie forwarduje dalej.
+ *
+ * Dlaczego w ogóle:
+ *   Bez tego proxy jest otwartym SSRF relay — każdy z dostępem do portu 8787
+ *   może kazać serwerowi wysłać dowolny request pod dowolny adres.
+ */
+export const proxyAuthMiddleware = createMiddleware<AppEnv>(async (c, next) => {
+  const header = c.req.header('X-RP-Auth') ?? ''
+  const token = header.replace(/^Bearer\s+/i, '').trim()
+
+  if (!token) {
+    return c.json(
+      {
+        error:
+          'Brak tokenu autoryzacji proxy (nagłówek X-RP-Auth). Zaloguj się ponownie.',
+      },
+      401,
+    )
+  }
+
+  const payload = await verifyToken(token)
+  if (!payload) {
+    return c.json({ error: 'Nieprawidłowy lub wygasły token proxy' }, 401)
+  }
+
+  c.set('userId', payload.sub)
+  c.set('username', payload.username)
+  c.set('isAdmin', isUserAdmin(payload.sub))
+  await next()
+})
+

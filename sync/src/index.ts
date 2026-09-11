@@ -23,7 +23,7 @@ import { createEntityRoutes } from './routes/entities'
 import { adminRoutes } from './routes/admin'
 import { settingsRoutes } from './routes/settings'
 import { makeProxyHandler } from './proxy'
-import { verifyToken, type AppEnv } from './auth'
+import { verifyToken, proxyAuthMiddleware, type AppEnv } from './auth'
 import { register, unregister, connectionStats } from './ws'
 import { PORT } from './config'
 import { seedAdminIfNeeded } from './seed'
@@ -44,6 +44,7 @@ app.use(
       'X-LLM-Target',
       'X-SearXNG-Target',
       'X-Image-Target',
+      'X-RP-Auth',
     ],
     allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS'],
     exposeHeaders: ['Content-Length', 'Content-Type', 'ETag', 'Retry-After'],
@@ -53,13 +54,18 @@ app.use(
 app.get('/health', (c) => {
   return c.json({
     ok: true,
-    version: '0.3.2',
+    version: '0.3.3',
     ws: connectionStats(),
     time: new Date().toISOString(),
   })
 })
 
 // --- Proxy do uslug zewnetrznych ---
+// UWAGA: proxyAuthMiddleware MUSI byc przed handlerem proxy. Bez tego
+// endpointy sa otwartym SSRF relay (patrz komentarz w proxy.ts).
+app.use('/llm-proxy/*', proxyAuthMiddleware)
+app.use('/searxng-proxy/*', proxyAuthMiddleware)
+app.use('/images-proxy/*', proxyAuthMiddleware)
 app.all('/llm-proxy/*', makeProxyHandler('/llm-proxy', 'x-llm-target'))
 app.all('/searxng-proxy/*', makeProxyHandler('/searxng-proxy', 'x-searxng-target'))
 app.all('/images-proxy/*', makeProxyHandler('/images-proxy', 'x-image-target'))
@@ -127,7 +133,7 @@ if (existsSync(PUBLIC_DIR)) {
   console.log('[rp-sync] brak katalogu ./public - tryb API-only (dev)')
 }
 
-app.get('/', (c) => c.json({ name: 'rp-sync', version: '0.3.2' }))
+app.get('/', (c) => c.json({ name: 'rp-sync', version: '0.3.3' }))
 
 app.notFound((c) => c.json({ error: 'Nie znaleziono' }, 404))
 
@@ -149,3 +155,4 @@ export default {
   fetch: app.fetch,
   websocket,
 }
+

@@ -2,15 +2,17 @@
  * Klient mostka ComfyUI (OpenAI-compatible Images API).
  *
  * Wszystko idzie przez /images-proxy na wlasnym origin. Adres mostka
- * w naglowku X-Image-Target.
+ * w naglowku X-Image-Target, JWT sync w X-RP-Auth (wymagane przez proxy).
  *
  * Zwraca Blob (nie data URL) - to caller decyduje co zrobic: upload do
  * /blobs jako blob, trzymac w pamieci itd. Dzieki temu imageGen.ts jest
- * wolny od zaleznosci sync (auth, blobCache) i pozostaje czysta warstwa.
+ * wolny od logiki sync poza samym tokenem uwierzytelniajacym proxy.
  *
  * Diagnostyka: kazdy krok (post do mostka, otrzymany URL, fetch przez proxy)
  * loguje sie w konsoli z prefiksem [imageGen].
  */
+
+import { getToken } from '../services/sync/client'
 
 export type ImageGenResult =
   | { status: 'done'; blob: Blob }
@@ -24,9 +26,17 @@ interface GenerateImageOptions {
   signal?: AbortSignal
 }
 
+/** Wspolne naglowki proxy: target + JWT sync. */
+function proxyAuthHeaders(targetBase: string): Record<string, string> {
+  const headers: Record<string, string> = { 'X-Image-Target': targetBase }
+  const token = getToken()
+  if (token) headers['X-RP-Auth'] = `Bearer ${token}`
+  return headers
+}
+
 function resolveUrl(baseUrl: string, path: string): { url: string; headers: Record<string, string> } {
   const cleanBase = baseUrl.trim().replace(/\/+$/, '')
-  return { url: `/images-proxy${path}`, headers: { 'X-Image-Target': cleanBase } }
+  return { url: `/images-proxy${path}`, headers: proxyAuthHeaders(cleanBase) }
 }
 
 /**
@@ -44,18 +54,18 @@ function resolveImageFetch(
 
   if (imageUrl.startsWith(cleanBase)) {
     const path = imageUrl.slice(cleanBase.length) || '/'
-    return { url: `/images-proxy${path}`, headers: { 'X-Image-Target': cleanBase } }
+    return { url: `/images-proxy${path}`, headers: proxyAuthHeaders(cleanBase) }
   }
 
   if (imageUrl.startsWith('/')) {
-    return { url: `/images-proxy${imageUrl}`, headers: { 'X-Image-Target': cleanBase } }
+    return { url: `/images-proxy${imageUrl}`, headers: proxyAuthHeaders(cleanBase) }
   }
 
   try {
     const u = new URL(imageUrl)
     return {
       url: `/images-proxy${u.pathname}${u.search}`,
-      headers: { 'X-Image-Target': u.origin },
+      headers: proxyAuthHeaders(u.origin),
     }
   } catch {
     return { url: imageUrl, headers: {} }
@@ -193,3 +203,4 @@ export async function generateImage(
 }
 
 // === END OF FILE ===
+

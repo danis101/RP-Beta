@@ -1,6 +1,7 @@
 import type { ApiAdapter, SendMessageParams, StreamCallbacks, ListModelsResult, ModelInfo } from './types'
 import type { ApiProfile, APIToolCall } from '../../types'
 import { buildToolDeclarations } from '../../lib/toolRegistry'
+import { getToken } from '../sync/client'
 
 export interface OpenAIConfig {
   baseUrl: string
@@ -41,6 +42,8 @@ export interface ToolDefinition {
  *
  * Proxy: all requests go through `/llm-proxy/...` on the same origin.
  * Target address is passed in the `X-LLM-Target` header.
+ * Auth to proxy: `X-RP-Auth: Bearer <jwt>` (JWT sync, oddzielony od
+ * `Authorization`, który niesie klucz API do LM Studio).
  *
  * Model list: tries LM Studio native `/api/v0/models` first, then falls
  * back to universal `/v1/models`.
@@ -71,7 +74,11 @@ export class OpenAIAdapter implements ApiAdapter {
 
   private resolve(path: string): { url: string; headers: Record<string, string> } {
     const cleanBase = this.normalizedBase()
-    return { url: `/llm-proxy${path}`, headers: { 'X-LLM-Target': cleanBase } }
+    const headers: Record<string, string> = { 'X-LLM-Target': cleanBase }
+    // Proxy wymaga zalogowanego usera RP — JWT sync w dedykowanym nagłówku.
+    const token = getToken()
+    if (token) headers['X-RP-Auth'] = `Bearer ${token}`
+    return { url: `/llm-proxy${path}`, headers }
   }
 
   private authHeaders(): Record<string, string> {
@@ -380,3 +387,4 @@ export class OpenAIAdapter implements ApiAdapter {
     return { models, backend: 'generic' }
   }
 }
+

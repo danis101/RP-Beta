@@ -25,6 +25,26 @@ export const GC_INTERVAL_MS = 24 * 60 * 60 * 1000
 export const LOGIN_RATE_LIMIT = 5
 export const LOGIN_RATE_WINDOW_MS = 60 * 1000
 
+/**
+ * Allowlista celów proxy (X-LLM-Target / X-SearXNG-Target / X-Image-Target).
+ *
+ * Format: CSV hostów albo host:port, np.:
+ *   PROXY_ALLOWED_HOSTS=192.168.100.80,192.168.100.81:8040,pc.ibnz.eu
+ *
+ * Zachowanie:
+ *   - puste   -> dozwolone TYLKO adresy prywatne (LAN, loopback, link-local).
+ *                Publiczne IP i domeny są blokowane (anty-SSRF).
+ *   - niepuste -> dozwolone WYŁĄCZNIE hosty z listy (można wpisać publiczne).
+ *
+ * Uwaga: "host" to hostname albo IP z opcjonalnym portem. Dopasowanie
+ * jest dokładne (bez wildcardów) — świadomie, żeby uniknąć przypadkowego
+ * otwarcia na cały zakres.
+ */
+export const PROXY_ALLOWED_HOSTS: string[] = (process.env.PROXY_ALLOWED_HOSTS || '')
+  .split(',')
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean)
+
 if (JWT_SECRET.startsWith('dev-secret') && process.env.NODE_ENV === 'production') {
   console.warn('[config] UWAGA: JWT_SECRET nie jest ustawiony produkcyjnie — ustaw go w .env')
 }
@@ -35,3 +55,12 @@ if (process.env.NODE_ENV === 'production' && (!ADMIN_USERNAME || !ADMIN_PASSWORD
       'Jeśli baza jest pusta, nie da się utworzyć konta admina — zaloguj się nie będzie możliwe.',
   )
 }
+
+if (PROXY_ALLOWED_HOSTS.length === 0) {
+  console.log(
+    '[config] PROXY_ALLOWED_HOSTS nie ustawione — proxy dopuszcza tylko adresy prywatne ' +
+      '(192.168.*, 10.*, 172.16-31.*, loopback, link-local). ' +
+      'Publiczne hosty zablokowane. Rozszerz przez PROXY_ALLOWED_HOSTS w .env.',
+  )
+}
+

@@ -1,4 +1,5 @@
 import type { WebSearchResult } from '../types'
+import { getToken } from '../services/sync/client'
 
 let lastSearchTime = 0
 
@@ -8,6 +9,9 @@ let lastSearchTime = 0
  * Zawsze przez `/searxng-proxy` na własnym origin (dev: Vite proxy plugin,
  * prod: Hono backend). Adres SearXNG w nagłówku `X-SearXNG-Target`.
  * Dzięki temu HTTPS strona może wołać HTTP SearXNG bez mixed content.
+ *
+ * Auth do proxy: `X-RP-Auth: Bearer <jwt>` — endpoint proxy wymaga
+ * zalogowanego usera (patrz sync/src/proxy.ts).
  */
 export async function searchWeb(
   query: string,
@@ -35,6 +39,9 @@ export async function searchWeb(
     'Accept': 'application/json',
     'X-SearXNG-Target': cleanBase,
   }
+
+  const syncToken = getToken()
+  if (syncToken) headers['X-RP-Auth'] = `Bearer ${syncToken}`
 
   if (apiKey) {
     headers.Authorization = `Bearer ${apiKey}`
@@ -88,3 +95,4 @@ export async function searchWeb(
     throw error
   }
 }
+
