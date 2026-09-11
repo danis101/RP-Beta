@@ -83,6 +83,12 @@ export async function uploadBlobFromFile(file: File): Promise<string> {
   return uploadBlob(bytes, file.type || 'application/octet-stream', file.name)
 }
 
+/**
+ * Uploaduje blob z Blob (np. wygenerowany obraz z mostka).
+ */
+export async function uploadBlobFromBlob(blob: Blob, filename = 'blob'): Promise<string> {
+  const bytes = new Uint8Array(await blob.arrayBuffer())
+  return uploadBlob(bytes, blob.type || 'application/octet-stream', filename)
+}
+
 // === END OF FILE ===
-// Jesli nie widzisz tego markera na dole, wklejanie bylo uciete.
-// Powtorz: Ctrl+A -> Delete -> Ctrl+V.

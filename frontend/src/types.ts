@@ -50,11 +50,8 @@ export interface CharacterBook {
  * Pola z `description` do `character_version` odwzorowuja spec SillyTavern V2/V3.
  *
  * Portret:
- *   - `portraitBlobId` (nowy format) - sha256 bloba na serwerze, uzywany przez
- *     komponent Avatar (fetch przez /blobs/:sha z JWT).
- *   - `portrait` (stary format) - base64 data URL inline. Zachowany dla
- *     kompatybilnosci wstecz ze starymi kartami. Przy najblizszej edycji
- *     karty konwertuje sie na blob.
+ *   - `portraitBlobId` (nowy format) - sha256 bloba na serwerze.
+ *   - `portrait` (stary format) - base64 data URL inline. Deprecated.
  */
 export interface CharacterCard {
   id: string
@@ -81,7 +78,7 @@ export interface CharacterCard {
 
   /** Nowy format: sha256 bloba. Preferowany. */
   portraitBlobId?: string | null
-  /** Stary format: base64 data URL. Deprecated, uzywany tylko przy odczycie. */
+  /** Stary format: base64 data URL. Deprecated. */
   portrait?: string
 
   /** Pelny oryginalny spec ST z importu. */
@@ -95,7 +92,7 @@ export interface CharacterCard {
 /**
  * Persona uzytkownika.
  *
- * Avatar: jak przy CharacterCard - `avatarBlobId` (nowy) lub `avatar` (stary base64).
+ * Avatar: `avatarBlobId` (nowy) lub `avatar` (stary base64).
  */
 export interface Persona {
   id: string
@@ -133,9 +130,7 @@ export interface ApiProfile {
   contextLength: number
   streamingEnabled: boolean
   memoryMessages: number
-  /** Czy obsluguje vision (wysylanie obrazow) */
   visionEnabled: boolean
-  /** Model do vision (jesli inny niz glowny) */
   visionModel?: string
 }
 
@@ -189,10 +184,19 @@ export interface StylePreset {
 
 export type MessageRole = 'user' | 'assistant'
 
+/**
+ * Tool call (obraz lub websearch).
+ *
+ * Obraz:
+ *   - `imageBlobId` (nowy format) - sha256 bloba. Preferowany.
+ *   - `imageUrl` (stary format) - base64 data URL. Deprecated.
+ */
 export interface ToolCall {
   type: 'image' | 'websearch'
   label: string
-  /** URL wygenerowanego obrazu (dla type: 'image'). */
+  /** Nowy format: sha256 bloba. */
+  imageBlobId?: string
+  /** Stary format: base64 data URL. Deprecated. */
   imageUrl?: string
   /** Wyniki wyszukiwania (dla type: 'websearch'). */
   results?: WebSearchResult[]
@@ -209,10 +213,16 @@ export interface WebSearchResult {
   source?: string
 }
 
-/** Zalacznik do wiadomosci (np. obraz) */
+/**
+ * Zalacznik do wiadomosci (np. obraz).
+ * `blobId` (nowy) lub `data` (stary base64, deprecated).
+ */
 export interface MessageAttachment {
   type: 'image'
-  data: string // base64 data URL
+  /** Nowy format: sha256 bloba. */
+  blobId?: string
+  /** Stary format: base64 data URL. Deprecated. */
+  data?: string
   name?: string
 }
 
@@ -222,7 +232,7 @@ export interface APIToolCall {
   type: 'function'
   function: {
     name: string
-    arguments: string // JSON string
+    arguments: string
   }
 }
 
@@ -230,9 +240,7 @@ export interface APIToolCall {
 export interface MessageVariant {
   content: string
   toolCall?: ToolCall
-  /** Tokeny reasoning/thinking wygenerowane przez model (opcjonalne). */
   thinking?: string
-  /** Zalaczniki (obrazy) */
   attachments?: MessageAttachment[]
 }
 
@@ -262,15 +270,10 @@ export interface Conversation {
   characterId: string
   messages: ChatMessage[]
   unread: number
-  /** Opcjonalny override persony dla tej konwersacji (undefined = domyslna). */
   personaId?: string
-  /** Opcjonalny override stylu dla tej konwersacji (undefined = domyslny). */
   styleId?: string
-  /** Aktywne lorebooki dla tej konwersacji. */
   lorebookIds?: string[]
-  /** Pamiec dlugotrwala - lista podsumowan. */
   longTermMemory: LongTermMemoryEntry[]
-  /** Indeks ostatniej wiadomosci, ktora zostala juz podsumowana. */
   lastSummarizedIndex: number
   /** Server-assigned metadane do optimistic lockingu. */
   _serverCreatedAt?: number

@@ -4,19 +4,16 @@
  * Wszystko idzie przez /images-proxy na wlasnym origin. Adres mostka
  * w naglowku X-Image-Target.
  *
- * Persystencja: gdy mostek zwroci URL (response_format='url'), jest to
- * zwykle URL tymczasowy (np. /images/view/xyz.png). Pobieramy go raz i
- * konwertujemy na data URL, ktory zapisujemy w wariancie wiadomosci -
- * obraz przetrwa w bazie razem z konwersacja.
+ * Zwraca Blob (nie data URL) - to caller decyduje co zrobic: upload do
+ * /blobs jako blob, trzymac w pamieci itd. Dzieki temu imageGen.ts jest
+ * wolny od zaleznosci sync (auth, blobCache) i pozostaje czysta warstwa.
  *
- * Diagnostyka: kazdy krok (post do mostka, otrzymany URL, fetch przez proxy,
- * konwersja na base64) loguje sie w konsoli z prefiksem [imageGen].
- * Jesli obraz sie nie wyswietla, w DevTools -> Console zobaczysz dokladnie
- * na ktorym etapie sie to wywalilo.
+ * Diagnostyka: kazdy krok (post do mostka, otrzymany URL, fetch przez proxy)
+ * loguje sie w konsoli z prefiksem [imageGen].
  */
 
 export type ImageGenResult =
-  | { status: 'done'; dataUrl: string; persisted: boolean; originalUrl?: string }
+  | { status: 'done'; blob: Blob }
   | { status: 'processing' }
   | { status: 'error'; message: string }
 
@@ -32,22 +29,12 @@ function resolveUrl(baseUrl: string, path: string): { url: string; headers: Reco
   return { url: `/images-proxy${path}`, headers: { 'X-Image-Target': cleanBase } }
 }
 
-function blobToDataURL(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(reader.result as string)
-    reader.onerror = () => reject(reader.error ?? new Error('FileReader error'))
-    reader.readAsDataURL(blob)
-  })
-}
-
 /**
  * Buduje URL do pobrania obrazu z mostka przez proxy backendu.
  * Obsluguje:
- *   1) data:...                      -> zwracamy bez zmian
- *   2) absolutny URL zgodny z base   -> strip base, przez proxy
- *   3) relatywny /sciezka            -> przez proxy
- *   4) absolutny URL do innego hosta -> przez proxy z origin tego hosta
+ *   1) absolutny URL zgodny z base   -> strip base, przez proxy
+ *   2) relatywny /sciezka            -> przez proxy
+ *   3) absolutny URL do innego hosta -> przez proxy z origin tego hosta
  */
 function resolveImageFetch(
   imageUrl: string,
@@ -75,15 +62,11 @@ function resolveImageFetch(
   }
 }
 
-/**
- * Pobiera obraz po URL i konwertuje na data URL.
- * Zwraca null przy bledzie. W DEV loguje szczegolowy powod.
- */
-async function fetchAsDataURL(
+async function fetchAsBlob(
   imageUrl: string,
   baseUrl: string,
   signal?: AbortSignal,
-): Promise<string | null> {
+): Promise<Blob | null> {
   const { url, headers } = resolveImageFetch(imageUrl, baseUrl)
   console.info('[imageGen] pobieram obraz przez proxy:', url, 'cel:', headers['X-Image-Target'])
 
@@ -100,12 +83,7 @@ async function fetchAsDataURL(
     const contentType = resp.headers.get('content-type') || ''
     if (!contentType.startsWith('image/')) {
       const text = await resp.text().catch(() => '')
-      console.warn(
-        '[imageGen] proxy zwrocilo nie-obraz:',
-        contentType,
-        'tresc:',
-        text.slice(0, 200),
-      )
+      console.warn('[imageGen] proxy zwrocilo nie-obraz:', contentType, text.slice(0, 200))
       return null
     }
 
@@ -115,16 +93,25 @@ async function fetchAsDataURL(
       return null
     }
 
-    console.info(
-      `[imageGen] obraz pobrany: ${(blob.size / 1024).toFixed(0)} KB binarnie, ~${((blob.size * 4) / 3 / 1024).toFixed(0)} KB jako base64`,
-    )
-
-    return await blobToDataURL(blob)
+    console.info(`[imageGen] obraz pobrany: ${(blob.size / 1024).toFixed(0)} KB`)
+    return blob
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') return null
     console.error('[imageGen] blad pobierania obrazu:', error)
     return null
   }
+}
+
+function base64ToBlob(b64: string, mime = 'image/png'): Blob {
+  const binary = atob(b64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i)
+  }
+  // TS 5.7: Uint8Array<ArrayBufferLike> nie pasuje do BlobPart, kopiujemy.
+  const ab = new ArrayBuffer(bytes.byteLength)
+  new Uint8Array(ab).set(bytes)
+  return new Blob([ab], { type: mime })
 }
 
 export async function generateImage(
@@ -179,40 +166,30 @@ export async function generateImage(
   if (Array.isArray(items) && items.length > 0) {
     const first = items[0]
 
-    // b64_json: mostek juz dal nam data URL, zero pracy.
+    // b64_json: mostek dal nam base64, konwertujemy na Blob.
     if (first?.b64_json) {
       console.info('[imageGen] mostek zwrocil b64_json, dlugosc:', first.b64_json.length)
-      return {
-        status: 'done',
-        dataUrl: `data:image/png;base64,${first.b64_json}`,
-        persisted: true,
-      }
+      return { status: 'done', blob: base64ToBlob(first.b64_json) }
     }
 
-    // url: probujemy pobrac i zapisac jako data URL.
+    // url: pobieramy przez proxy i zwracamy Blob.
     if (first?.url) {
       const originalUrl: string = first.url
       console.info('[imageGen] mostek zwrocil URL:', originalUrl)
 
-      if (originalUrl.startsWith('data:')) {
-        return { status: 'done', dataUrl: originalUrl, persisted: true }
+      const blob = await fetchAsBlob(originalUrl, options.baseUrl, options.signal)
+      if (blob) {
+        return { status: 'done', blob }
       }
 
-      const dataUrl = await fetchAsDataURL(originalUrl, options.baseUrl, options.signal)
-      if (dataUrl) {
-        return { status: 'done', dataUrl, persisted: true }
+      return {
+        status: 'error',
+        message: 'Nie udalo sie pobrac obrazu z mostka przez proxy.',
       }
-
-      // Fallback - obraz pozostaje w oryginalnym URL. NIE zadziala w HTTPS
-      // (mixed content), ale zwracamy zeby user zobaczyl w UI ze obraz
-      // powstal i mial link. ChatBubble pokaze to jako klikalny link.
-      console.warn(
-        '[imageGen] nie udalo sie pobrac obrazu przez proxy. Fallback na oryginalny URL (moze nie zaladowac sie z powodu mixed content):',
-        originalUrl,
-      )
-      return { status: 'done', dataUrl: originalUrl, persisted: false, originalUrl }
     }
   }
 
   return { status: 'error', message: 'Mostek zwrocil nieoczekiwany format odpowiedzi.' }
 }
+
+// === END OF FILE ===

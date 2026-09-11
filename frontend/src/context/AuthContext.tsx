@@ -1,10 +1,10 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import * as sync from '../services/sync/client'
+import { clearBlobCache } from '../lib/blobCache'
 import type { SyncUser } from '../services/sync/types'
 
 interface AuthContextValue {
   user: SyncUser | null
-  /** Trwa weryfikacja tokenu z localStorage przy zimnym starcie. */
   loading: boolean
   login: (username: string, password: string) => Promise<void>
   logout: () => void
@@ -13,14 +13,8 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | null>(null)
 
 /**
- * Zarządza sesją użytkownika.
- *
- * Przy starcie: jeśli w localStorage jest token, próbuje zweryfikować go
- * przez `/auth/me`. Sukces = zalogowany, jakikolwiek błąd = czyścimy token
- * i pokazujemy ekran logowania.
- *
- * Globalna reakcja na 401 z dowolnego endpointu: subskrypcja `onUnauthorized`
- * z klienta — czyści user state i UI wraca do ekranu logowania.
+ * Zarzadza sesja uzytkownika.
+ * Przy logout czysci tez blob cache (zwalnia blob URL-e).
  */
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<SyncUser | null>(null)
@@ -38,9 +32,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const me = await sync.fetchMe()
         if (!cancelled) setUser(me)
       } catch {
-        // 401 już wyczyścił token przez fireUnauthorized. Network error też
-        // wymaga czyścić — token może być dobry, ale nie zweryfikujemy go bez
-        // serwera. Użytkownik zobaczy ekran logowania i spróbuje jeszcze raz.
         if (!cancelled) sync.setToken(null)
       } finally {
         if (!cancelled) setLoading(false)
@@ -53,7 +44,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   useEffect(() => {
-    return sync.onUnauthorized(() => setUser(null))
+    return sync.onUnauthorized(() => {
+      clearBlobCache()
+      setUser(null)
+    })
   }, [])
 
   const login = async (username: string, password: string) => {
@@ -63,6 +57,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = () => {
     sync.logout()
+    clearBlobCache()
     setUser(null)
   }
 
@@ -78,3 +73,5 @@ export function useAuth(): AuthContextValue {
   if (!ctx) throw new Error('useAuth must be used within AuthProvider')
   return ctx
 }
+
+// === END OF FILE ===

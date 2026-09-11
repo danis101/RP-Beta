@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { Send, Square, Plus, X, Image as ImageIcon, Wand2 } from 'lucide-react'
+import { Send, Square, Plus, X, Image as ImageIcon, Wand2, Loader2 } from 'lucide-react'
 import { useI18n } from '../../i18n'
 import type { MessageAttachment } from '../../types'
+import { uploadBlobFromFile } from '../../services/sync'
+import { useBlobSrc } from '../../lib/blobCache'
 
 interface InputBarProps {
   onSend: (text: string, attachments?: MessageAttachment[]) => void
@@ -13,15 +15,24 @@ interface InputBarProps {
 }
 
 /**
- * Pole wpisywania wiadomości z dynamicznym rozszerzaniem (textarea).
- * Enter wysyła, Shift+Enter nowa linia. Przycisk Send/Stop po prawej.
- * Przycisk plusa po lewej rozwija menu: „Załącz obraz” (img2txt, jeśli
- * visionEnabled) oraz „Generuj obraz” (txt2img, jeśli imageGenEnabled).
+ * Pole wpisywania wiadomosci z dynamicznym rozszerzaniem (textarea).
+ * Enter wysyla, Shift+Enter nowa linia.
+ *
+ * Zalaczniki: plik od razu jest uploadowany na /blobs, w stanie trzymamy
+ * tylko blobId (sha256). Podglad renderuje sie przez useBlobSrc.
  */
-export default function InputBar({ onSend, onStop, isGenerating, visionEnabled = false, imageGenEnabled = false, onGenerateImage }: InputBarProps) {
+export default function InputBar({
+  onSend,
+  onStop,
+  isGenerating,
+  visionEnabled = false,
+  imageGenEnabled = false,
+  onGenerateImage,
+}: InputBarProps) {
   const { t } = useI18n()
   const [value, setValue] = useState('')
   const [attachments, setAttachments] = useState<MessageAttachment[]>([])
+  const [uploadingCount, setUploadingCount] = useState(0)
   const [plusOpen, setPlusOpen] = useState(false)
   const plusRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -40,6 +51,7 @@ export default function InputBar({ onSend, onStop, isGenerating, visionEnabled =
   const handleSubmit = () => {
     const text = value.trim()
     if (!text && attachments.length === 0) return
+    if (uploadingCount > 0) return
     onSend(text, attachments.length > 0 ? attachments : undefined)
     setValue('')
     setAttachments([])
@@ -57,48 +69,50 @@ export default function InputBar({ onSend, onStop, isGenerating, visionEnabled =
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`
   }
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  /** Upload plikow od razu na /blobs, do stanu trafia tylko blobId. */
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files
-    if (!files) return
+    if (!files || files.length === 0) return
 
-    for (const file of files) {
-      if (!file.type.startsWith('image/')) continue
-      const reader = new FileReader()
-      reader.onload = () => {
-        const data = reader.result as string
-        setAttachments((prev) => [
-          ...prev,
-          { type: 'image', data, name: file.name },
-        ])
-      }
-      reader.readAsDataURL(file)
-    }
+    const list = Array.from(files).filter((f) => f.type.startsWith('image/'))
     e.target.value = ''
+
+    if (list.length === 0) return
+
+    setUploadingCount((prev) => prev + list.length)
+
+    for (const file of list) {
+      try {
+        const blobId = await uploadBlobFromFile(file)
+        setAttachments((prev) => [...prev, { type: 'image', blobId, name: file.name }])
+      } catch (err) {
+        console.error('Upload zalacznika nie powiodl sie:', err)
+        alert(err instanceof Error ? err.message : String(err))
+      } finally {
+        setUploadingCount((prev) => Math.max(0, prev - 1))
+      }
+    }
   }
 
   const removeAttachment = (index: number) => {
     setAttachments((prev) => prev.filter((_, i) => i !== index))
   }
 
+  const canSend = (value.trim() || attachments.length > 0) && uploadingCount === 0
+
   return (
     <div className="space-y-2">
-      {/* Podgląd załączników */}
+      {/* Podglad zalacznikow */}
       {attachments.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {attachments.map((att, idx) => (
-            <div key={idx} className="relative group">
-              <img
-                src={att.data}
-                alt={att.name || 'załącznik'}
-                className="h-16 w-16 rounded-lg border border-edge object-cover"
-              />
-              <button
-                onClick={() => removeAttachment(idx)}
-                className="absolute -right-1 -top-1 rounded-full bg-[#2a1a1a] p-0.5 text-[#e05b5b] hover:bg-[#3a1a1a]"
-              >
-                <X size={12} />
-              </button>
-            </div>
+            <AttachmentPreview
+              key={idx}
+              blobId={att.blobId}
+              legacyData={att.data}
+              name={att.name}
+              onRemove={() => removeAttachment(idx)}
+            />
           ))}
         </div>
       )}
@@ -108,7 +122,7 @@ export default function InputBar({ onSend, onStop, isGenerating, visionEnabled =
           <div className="relative" ref={plusRef}>
             <button
               onClick={() => setPlusOpen((prev) => !prev)}
-              title="Załącz / generuj"
+              title="Zalacz / generuj"
               className={`flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-full border border-edge transition-colors ${
                 plusOpen ? 'bg-surface-light text-white' : 'bg-surface text-[#8a8a94] hover:bg-surface-light hover:text-white'
               }`}
@@ -185,13 +199,51 @@ export default function InputBar({ onSend, onStop, isGenerating, visionEnabled =
         ) : (
           <button
             onClick={handleSubmit}
-            disabled={!value.trim() && attachments.length === 0}
+            disabled={!canSend}
             className="flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-full bg-accent text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
           >
-            <Send size={16} />
+            {uploadingCount > 0 ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
           </button>
         )}
       </div>
     </div>
   )
 }
+
+/** Podglad zalacznika w InputBar - rozwiazuje blobId przez useBlobSrc. */
+function AttachmentPreview({
+  blobId,
+  legacyData,
+  name,
+  onRemove,
+}: {
+  blobId?: string
+  legacyData?: string
+  name?: string
+  onRemove: () => void
+}) {
+  const src = useBlobSrc(blobId ?? legacyData)
+  return (
+    <div className="relative group">
+      {src ? (
+        <img
+          src={src}
+          alt={name || 'zalacznik'}
+          className="h-16 w-16 rounded-lg border border-edge object-cover"
+        />
+      ) : (
+        <div className="flex h-16 w-16 items-center justify-center rounded-lg border border-edge bg-surface">
+          <Loader2 size={14} className="animate-spin text-[#8a8a94]" />
+        </div>
+      )}
+      <button
+        onClick={onRemove}
+        className="absolute -right-1 -top-1 rounded-full bg-[#2a1a1a] p-0.5 text-[#e05b5b] hover:bg-[#3a1a1a]"
+      >
+        <X size={12} />
+      </button>
+    </div>
+  )
+}
+
+// === END OF FILE ===

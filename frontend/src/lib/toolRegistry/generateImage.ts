@@ -1,14 +1,15 @@
 import type { ToolDef } from './types'
 import { refineImagePrompt } from '../refiner'
 import { generateImage } from '../imageGen'
+import { uploadBlobFromBlob } from '../../services/sync'
 
 /**
- * Narzędzie generate_image — model czatu prosi o obraz.
- * Przepływ: kontekst (karta postaci + ostatnie wiadomości) → refiner (osobny LLM)
- *          → czysty positive prompt → mostek ComfyUI → obraz.
+ * Narzedzie generate_image - model czatu prosi o obraz.
+ * Przeplyw: kontekst (karta postaci + ostatnie wiadomosci) -> refiner (osobny LLM)
+ *          -> czysty positive prompt -> mostek ComfyUI -> blob na /blobs.
  *
- * Obraz jest zapisywany jako data URL w wariancie wiadomości (persystencja
- * w IndexedDB), więc nie znika po restarcie mostka ComfyUI.
+ * Obraz zapisujemy jako blob (sha256) zamiast base64 inline - baza danych
+ * odchudza sie, a GC sprzata osierocone bloby z usunietych wiadomosci.
  */
 export const generateImageTool: ToolDef = {
   name: 'generate_image',
@@ -44,7 +45,7 @@ export const generateImageTool: ToolDef = {
           type: 'image',
           label: description || 'Generowanie obrazu',
           status: 'error',
-          error: 'Nie ustawiono adresu backendu generowania obrazów.',
+          error: 'Nie ustawiono adresu backendu generowania obrazow.',
         },
       }
     }
@@ -76,11 +77,13 @@ export const generateImageTool: ToolDef = {
       const result = await generateImage(prompt, { baseUrl, responseFormat })
 
       if (result.status === 'done') {
+        // Upload do /blobs - trwale w bazie zamiast base64 w wariancie.
+        const blobId = await uploadBlobFromBlob(result.blob, 'generated.png')
         return {
           toolCall: {
             type: 'image',
             label: description || 'Wygenerowany obraz',
-            imageUrl: result.dataUrl,
+            imageBlobId: blobId,
             status: 'done',
           },
         }
@@ -91,7 +94,7 @@ export const generateImageTool: ToolDef = {
             type: 'image',
             label: description || 'Generowanie obrazu',
             status: 'generating',
-            error: 'Generowanie trwa dłużej niż 45s. Obraz pojawi się wkrótce.',
+            error: 'Generowanie trwa dluzej niz 45s. Obraz pojawi sie wkrotce.',
           },
         }
       }
@@ -115,3 +118,5 @@ export const generateImageTool: ToolDef = {
     }
   },
 }
+
+// === END OF FILE ===

@@ -4,6 +4,7 @@ import type { ChatMessage } from '../../types'
 import { getSelectedVariant } from '../../lib/messages'
 import { renderFormattedText } from '../../lib/FormattedText'
 import { substituteTokens, type TokenContext } from '../../lib/tokens'
+import { useBlobSrc } from '../../lib/blobCache'
 import { useSettings } from '../../context/SettingsContext'
 import ImageLightbox from './ImageLightbox'
 
@@ -12,6 +13,11 @@ interface ChatBubbleProps {
   tokens?: TokenContext
 }
 
+/**
+ * Pojedyncza wiadomosc w czacie.
+ * Obsluguje tool calls: websearch, image (blobId lub legacy data URL),
+ * oraz zalaczniki (blobId lub legacy data URL).
+ */
 export default function ChatBubble({ message, tokens }: ChatBubbleProps) {
   const { settings } = useSettings()
   const isUser = message.role === 'user'
@@ -30,6 +36,9 @@ export default function ChatBubble({ message, tokens }: ChatBubbleProps) {
   const showResults = settings.webSearchShowResults ?? true
 
   const openLightbox = (src: string) => setLightboxSrc(src)
+
+  // Rozwiazujemy blobId -> URL. Dla legacy data URL zwraca od razu.
+  const imageSrc = useBlobSrc(toolCall?.type === 'image' ? (toolCall.imageBlobId ?? toolCall.imageUrl) : undefined)
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -122,19 +131,14 @@ export default function ChatBubble({ message, tokens }: ChatBubbleProps) {
                 <AlertCircle size={14} className="shrink-0" />
                 <span>{toolCall.error || 'Blad generowania obrazu.'}</span>
               </div>
-            ) : toolCall.imageUrl ? (
+            ) : imageSrc ? (
               imageFailed ? (
-                // Nie udalo sie zaladowac obrazu (np. mixed content blokuje HTTP URL).
-                // Pokazujemy czytelny komunikat + klikalny link do oryginalu.
                 <div className="flex max-w-[280px] items-start gap-2 rounded-lg border border-[#3a2a2a] bg-[#1a1212] px-3 py-2 text-[11.5px] text-[#e05b5b]">
                   <ImageOff size={14} className="mt-0.5 shrink-0" />
                   <div className="min-w-0 flex-1">
                     <div className="font-medium">Nie mozna wyswietlic obrazu</div>
-                    <div className="mt-0.5 text-[11px] text-[#b88a8a]">
-                      Prawdopodobnie mixed content (HTTP obraz na HTTPS stronie).
-                    </div>
                     <a
-                      href={toolCall.imageUrl}
+                      href={imageSrc}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="mt-1 inline-flex items-center gap-1 text-[11px] text-accent hover:underline"
@@ -146,14 +150,14 @@ export default function ChatBubble({ message, tokens }: ChatBubbleProps) {
                 </div>
               ) : (
                 <img
-                  src={toolCall.imageUrl}
+                  src={imageSrc}
                   alt={toolCall.label}
                   onError={() => {
-                    console.warn('[ChatBubble] obraz nie zaladowal sie:', toolCall.imageUrl)
+                    console.warn('[ChatBubble] obraz nie zaladowal sie')
                     setImageFailed(true)
                   }}
                   className="max-h-[280px] max-w-[280px] cursor-zoom-in rounded-lg border border-edge object-cover transition-opacity hover:opacity-90"
-                  onClick={() => openLightbox(toolCall.imageUrl!)}
+                  onClick={() => openLightbox(imageSrc)}
                 />
               )
             ) : (
@@ -167,14 +171,13 @@ export default function ChatBubble({ message, tokens }: ChatBubbleProps) {
 
         {/* Attachments */}
         {attachments.map((att, idx) => (
-          <div key={idx} className="mt-1">
-            <img
-              src={att.data}
-              alt={att.name || 'obraz'}
-              className="max-h-[280px] max-w-[280px] cursor-zoom-in rounded-lg border border-edge object-cover transition-opacity hover:opacity-90"
-              onClick={() => openLightbox(att.data)}
-            />
-          </div>
+          <AttachmentImage
+            key={idx}
+            blobId={att.blobId}
+            legacyData={att.data}
+            name={att.name}
+            onImageClick={openLightbox}
+          />
         ))}
 
         {/* Fallback tool call */}
@@ -190,3 +193,34 @@ export default function ChatBubble({ message, tokens }: ChatBubbleProps) {
     </div>
   )
 }
+
+/**
+ * Zalacznik obrazu - rozwiazuje blobId (nowy) lub data (stary) na URL
+ * przez useBlobSrc i renderuje miniaturke.
+ */
+function AttachmentImage({
+  blobId,
+  legacyData,
+  name,
+  onImageClick,
+}: {
+  blobId?: string
+  legacyData?: string
+  name?: string
+  onImageClick: (src: string) => void
+}) {
+  const src = useBlobSrc(blobId ?? legacyData)
+  if (!src) return null
+  return (
+    <div className="mt-1">
+      <img
+        src={src}
+        alt={name || 'obraz'}
+        className="max-h-[280px] max-w-[280px] cursor-zoom-in rounded-lg border border-edge object-cover transition-opacity hover:opacity-90"
+        onClick={() => onImageClick(src)}
+      />
+    </div>
+  )
+}
+
+// === END OF FILE ===
