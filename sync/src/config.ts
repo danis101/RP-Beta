@@ -21,6 +21,19 @@ export const SOFT_DELETE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 /** Interwał GC (24h). */
 export const GC_INTERVAL_MS = 24 * 60 * 60 * 1000
 
+/**
+ * Okres ochronny dla świeżo wgranych blobów (domyślnie 1h).
+ *
+ * Scenariusz: user wybiera plik w InputBar lub CardEditor → upload leci na
+ * /blobs → dopiero po zapisaniu wiadomości/karty powstaje referencja. Jeśli
+ * w tym okienku (upload ≠ referencja) odpali się GC, blob zostałby skasowany
+ * jako sierota i referencja po zapisie wskazywałaby nieistniejący plik.
+ *
+ * GC ignoruje bloby młodsze niż ten próg — nawet jeśli nie mają jeszcze
+ * referencji. Nadpisanie przez env: GC_MIN_BLOB_AGE_MS.
+ */
+export const MIN_BLOB_AGE_MS = Number(process.env.GC_MIN_BLOB_AGE_MS) || 60 * 60 * 1000
+
 /** Rate limit logowania: 5 prób / minutę / IP. */
 export const LOGIN_RATE_LIMIT = 5
 export const LOGIN_RATE_WINDOW_MS = 60 * 1000

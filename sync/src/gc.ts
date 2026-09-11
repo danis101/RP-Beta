@@ -4,39 +4,45 @@
  * Dwa przebiegi:
  *   1) Hard delete encji z `deleted_at` starszym niż SOFT_DELETE_RETENTION_MS (7 dni).
  *      Fizycznie usuwa wiersze z `entities`.
- *   2) Znajduje i usuwa sierotne bloby.
- *      Referencje do blobów mogą być w:
+ *
+ *   2) Znajduje i usuwa sierotne bloby. Referencje do blobów mogą być w:
  *        - kolumnie `blob_id` (portrety postaci, awatary person)
  *        - treści `data_json` encji (np. message.toolCall.imageBlobId,
  *          message.variants[].attachments[].blobId) — wykrywane regexem sha256
- *      Wszystkie żywe encje (deleted_at IS NULL) są skanowane. Zbiór
- *      referowanych sha256 porównujemy z tabelą `blobs`; różnica = sieroty.
+ *
+ *   Referencje zbieramy PER-USER — blob jest per (user_id, sha256), więc
+ *   referencja innego usera nie powinna chronić mojego sierotę (i vice versa).
+ *
+ *   Okres ochronny (MIN_BLOB_AGE_MS, domyślnie 1h): bloby młodsze niż próg
+ *   NIE są usuwane nawet jeśli nie mają referencji — chroni to świeże uploady
+ *   czekające na zapis karty/wiadomości (upload ≠ referencja).
  *
  * Wywoływany raz na GC_INTERVAL_MS (24h) oraz raz przy starcie (nadrabia
- * zaległości po downtime). Nigdy nie usuwa blobów używanych przez żywe encje.
- *
- * Uwaga: GC skanuje data_json regexem /[a-f0-9]{64}/g — sha256 hex.
- * To znaczy że każdy 64-znakowy hex w JSON zostanie potraktowany jako
- * potencjalne ID bloba. W obecnym modelu danych to bezpieczne założenie;
- * gdyby w przyszłości do data_json trafiały inne hashe, trzeba to zawęzić.
+ * zaległości po downtime).
  */
 
 import { db } from './db'
 import { deleteBlob } from './blobs'
-import { GC_INTERVAL_MS, SOFT_DELETE_RETENTION_MS } from './config'
+import { GC_INTERVAL_MS, MIN_BLOB_AGE_MS, SOFT_DELETE_RETENTION_MS } from './config'
 
 const SHA256_RE = /[a-f0-9]{64}/g
 
 export interface GcResult {
   purgedEntities: number
+  /** Wszystkie bloby bez referencji (niezależnie od wieku). */
   orphanedBlobs: number
+  /** Ile z sierot zostało pominiętych przez okres ochronny. */
+  protectedYoung: number
+  /** Ile sierot faktycznie usunięto (bez błędów). */
   deletedBlobs: number
+  /** Ile prób usunięcia się nie powiodło (błąd FS / DB). */
+  failedDeletes: number
   elapsedMs: number
 }
 
-/** Zbiera wszystkie sha256 referowane przez żywe encje. */
-function collectReferencedBlobs(): Set<string> {
-  const refs = new Set<string>()
+/** Mapa: userId -> zbiór sha256 referowanych przez żywe encje tego usera. */
+function collectReferencedBlobs(): Map<string, Set<string>> {
+  const refs = new Map<string, Set<string>>()
 
   const rows = db
     .query(
@@ -45,61 +51,84 @@ function collectReferencedBlobs(): Set<string> {
     .all() as Array<{ user_id: string; blob_id: string | null; data_json: string }>
 
   for (const row of rows) {
-    if (row.blob_id) refs.add(row.blob_id)
+    let set = refs.get(row.user_id)
+    if (!set) {
+      set = new Set<string>()
+      refs.set(row.user_id, set)
+    }
+
+    if (row.blob_id) set.add(row.blob_id)
+
     const matches = row.data_json.match(SHA256_RE)
     if (matches) {
-      for (const m of matches) refs.add(m)
+      for (const m of matches) set.add(m)
     }
   }
 
   return refs
 }
 
-/** Główny przebieg GC. Wywoływany ręcznie lub z crona. */
-export function runGarbageCollection(): GcResult {
+/** Główny przebieg GC. Asynchroniczny — czeka na faktyczne usunięcia. */
+export async function runGarbageCollection(): Promise<GcResult> {
   const start = Date.now()
   const now = Date.now()
-  const cutoff = now - SOFT_DELETE_RETENTION_MS
+  const entityCutoff = now - SOFT_DELETE_RETENTION_MS
+  const blobAgeCutoff = now - MIN_BLOB_AGE_MS
 
   // 1. Hard delete starych soft-deleted encji.
   const purgeResult = db.run(
     `DELETE FROM entities WHERE deleted_at IS NOT NULL AND deleted_at < ?`,
-    [cutoff],
+    [entityCutoff],
   )
   const purgedEntities = purgeResult.changes
 
-  // 2. Znajdź sierotne bloby.
-  const referenced = collectReferencedBlobs()
+  // 2. Zbierz referencje per-user.
+  const refs = collectReferencedBlobs()
 
   const allBlobs = db
-    .query('SELECT user_id, sha256 FROM blobs')
-    .all() as Array<{ user_id: string; sha256: string }>
+    .query('SELECT user_id, sha256, created_at FROM blobs')
+    .all() as Array<{ user_id: string; sha256: string; created_at: number }>
 
-  const orphans = allBlobs.filter((b) => !referenced.has(b.sha256))
+  // Sierota = brak referencji u tego samego usera.
+  const potentialOrphans = allBlobs.filter((b) => {
+    const userRefs = refs.get(b.user_id)
+    return !userRefs || !userRefs.has(b.sha256)
+  })
+
+  // Okres ochronny — świeże bloby czekają na referencję.
+  const toDelete = potentialOrphans.filter((b) => b.created_at <= blobAgeCutoff)
+  const protectedYoung = potentialOrphans.length - toDelete.length
+
+  // Rzeczywiste kasowanie. Czekamy na każdą próbę, żeby raport był prawdziwy.
   let deletedBlobs = 0
+  let failedDeletes = 0
 
-  for (const blob of orphans) {
-    try {
-      // deleteBlob jest async, ale chcemy synchroniczny GC — używamy void + catch
-      // na wypadek błędu systemu plików.
-      void deleteBlob(blob.user_id, blob.sha256).catch((err) => {
-        console.warn(`[gc] błąd kasowania bloba ${blob.sha256}:`, err)
-      })
-      deletedBlobs++
-    } catch (err) {
-      console.warn(`[gc] wyjątek przy kasowaniu bloba ${blob.sha256}:`, err)
-    }
-  }
+  await Promise.all(
+    toDelete.map(async (b) => {
+      try {
+        await deleteBlob(b.user_id, b.sha256)
+        deletedBlobs++
+      } catch (err) {
+        failedDeletes++
+        console.warn(`[gc] błąd kasowania bloba ${b.user_id}/${b.sha256}:`, err)
+      }
+    }),
+  )
 
   const result: GcResult = {
     purgedEntities,
-    orphanedBlobs: orphans.length,
+    orphanedBlobs: potentialOrphans.length,
+    protectedYoung,
     deletedBlobs,
+    failedDeletes,
     elapsedMs: Date.now() - start,
   }
 
   console.log(
-    `[gc] usunięto ${purgedEntities} encji, znaleziono ${orphans.length} sierot (${deletedBlobs} skasowanych) w ${result.elapsedMs} ms`,
+    `[gc] encje usunięte: ${purgedEntities}, ` +
+      `sieroty: ${potentialOrphans.length} (ochrona wieku: ${protectedYoung}, ` +
+      `skasowane: ${deletedBlobs}, błędy: ${failedDeletes}) ` +
+      `w ${result.elapsedMs} ms`,
   )
 
   return result
@@ -109,18 +138,15 @@ export function runGarbageCollection(): GcResult {
 export function startGcLoop(): void {
   // Pierwszy przebieg z krótkim opóźnieniem, żeby nie blokować startu serwera.
   setTimeout(() => {
-    try {
-      runGarbageCollection()
-    } catch (err) {
+    void runGarbageCollection().catch((err) => {
       console.error('[gc] błąd pierwszego przebiegu:', err)
-    }
+    })
   }, 5000)
 
   setInterval(() => {
-    try {
-      runGarbageCollection()
-    } catch (err) {
+    void runGarbageCollection().catch((err) => {
       console.error('[gc] błąd przebiegu okresowego:', err)
-    }
+    })
   }, GC_INTERVAL_MS)
 }
+

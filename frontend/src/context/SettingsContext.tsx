@@ -1,28 +1,35 @@
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { FormattingPatterns, FormattingColors } from '../lib/formatting'
 import { defaultPatterns, defaultColors } from '../lib/formatting'
 import type { ApiProfile } from '../types'
 import { settingsApi } from '../services/sync'
 import { useI18n } from '../i18n'
+import { useAuth } from './AuthContext'
 
 /**
  * Ustawienia aplikacji.
  *
  * Zrodlo prawdy: serwer (/settings). localStorage zostaje jako cache
- * (przyspiesza start i unika "mrugania" domyslnymi wartosciami zanim
- * przyjdzie odpowiedz z serwera).
+ * per-user (klucz `rp-settings:<userId>`), zeby:
+ *   - przyspieszyc start (bez "mrugania" domyslnymi wartosciami)
+ *   - NIE przeciekac miedzy kontami na tej samej przegladarce
+ *
+ * Wczesniejsza wersja uzywala globalnego klucza `rp-settings` — to powodowalo
+ * ze po zalogowaniu nowego usera jego cache startowy zawieral dane poprzedniego
+ * (w tym profile API z apiKey). Teraz klucz jest per-user, a stary globalny
+ * klucz jest jednorazowo czyszczony przy starcie (bez migracji - swiadomie,
+ * zeby nie przypisac cudzych ustawien do pierwszego zalogowanego usera).
  *
  * Cykl zycia:
- *   1. Mount: probuje wczytac z localStorage (natychmiast, bez czekania)
+ *   1. Mount: wczytaj z `rp-settings:<userId>` (natychmiast, bez czekania)
  *   2. Rownolegle: fetch z serwera
- *      - sukces: podmienia stan (serwer > localStorage)
- *      - brak settings na serwerze (pierwszy login po aktualizacji):
- *        wgrywa lokalne/defaults na serwer
+ *      - sukces: podmienia stan (serwer > cache)
+ *      - brak na serwerze (pierwszy login): wgrywa biezace (cache/defaults)
  *   3. Zmiany: setState lokalnie + PUT do serwera w tle (optimistic)
- *   4. WS event 'settings.changed' z innego urzadzenia: refetch
+ *   4. WS event 'settings.changed': refreshFromServer (stabilny useCallback)
  *
- * Loading state: dopoki nie ma ani localStorage ani serwera - pokazuje
- * spinner. Zwykle trwa <100ms (localStorage natychmiast, serwer szybko).
+ * Timer debounce jest czyszczony przy odmontowaniu providera (logout),
+ * zeby opozniony zapis nie polecial juz po sesji.
  */
 
 export interface AppSettings {
@@ -66,7 +73,14 @@ interface SettingsContextType {
   refreshFromServer: () => Promise<void>
 }
 
-const SETTINGS_KEY = 'rp-settings'
+/** Prefiks klucza cache w localStorage. Pelny klucz: `rp-settings:<userId>`. */
+const SETTINGS_KEY_PREFIX = 'rp-settings:'
+/** Stary, globalny klucz (sprzed podzialu per-user). Czyszczony przy starcie. */
+const LEGACY_SETTINGS_KEY = 'rp-settings'
+
+function settingsKeyFor(userId: string): string {
+  return `${SETTINGS_KEY_PREFIX}${userId}`
+}
 
 function defaultAiProfile(): ApiProfile {
   return {
@@ -131,13 +145,24 @@ function defaultSettings(): AppSettings {
 }
 
 /**
- * Wczytuje z localStorage. Mozliwe ze to stare dane z poprzednich wersji
- * (przed Etapem 2 - mialy stylePresets/lorebooks). Te pola sa ignorowane
- * (nie ma ich w AppSettings), a brakujace uzupelniamy defaults.
+ * Wczytuje cache z localStorage dla danego usera.
+ * Stary globalny klucz jest usuwany (bez migracji — bezpieczniej dla izolacji kont).
  */
-function loadFromLocalStorage(): AppSettings | null {
-  const raw = localStorage.getItem(SETTINGS_KEY)
+function loadFromLocalStorage(userId: string): AppSettings | null {
+  if (!userId) return null
+
+  // Jednorazowo usun stary globalny klucz, zeby nie wrocil przez inna sciezke.
+  try {
+    if (localStorage.getItem(LEGACY_SETTINGS_KEY) !== null) {
+      localStorage.removeItem(LEGACY_SETTINGS_KEY)
+    }
+  } catch {
+    // localStorage moze byc niedostepny — ignorujemy.
+  }
+
+  const raw = localStorage.getItem(settingsKeyFor(userId))
   if (!raw) return null
+
   try {
     const parsed = JSON.parse(raw) as Partial<AppSettings> & {
       baseUrl?: string
@@ -168,7 +193,11 @@ function loadFromLocalStorage(): AppSettings | null {
     }
   } catch (e) {
     console.warn('Blad parsowania ustawien z localStorage:', e)
-    localStorage.removeItem(SETTINGS_KEY)
+    try {
+      localStorage.removeItem(settingsKeyFor(userId))
+    } catch {
+      /* ignore */
+    }
     return null
   }
 }
@@ -177,10 +206,12 @@ const SettingsContext = createContext<SettingsContextType | null>(null)
 
 export function SettingsProvider({ children }: { children: ReactNode }) {
   const { t } = useI18n()
+  const { user } = useAuth()
+  const userId = user?.id ?? ''
 
-  // Inicjalizacja: localStorage (jesli jest) albo defaults.
-  // Stan poczatkowy jest natychmiastowy - brak mrugania.
-  const [settings, setSettings] = useState<AppSettings>(() => loadFromLocalStorage() ?? defaultSettings())
+  const [settings, setSettings] = useState<AppSettings>(
+    () => loadFromLocalStorage(userId) ?? defaultSettings(),
+  )
   const [loading, setLoading] = useState(true)
 
   // Ref na najswiezsze settings - do unikania stale closure w debounced save.
@@ -190,22 +221,41 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   // Debounce timera PUT (zmiany szybkie - np. suwak - nie zapisujemy kazdej).
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const persistLocal = (next: AppSettings): AppSettings => {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(next))
+  /** Zapis do localStorage pod kluczem tego usera. */
+  const persistLocal = useCallback((next: AppSettings): AppSettings => {
+    if (!userId) return next
+    try {
+      localStorage.setItem(settingsKeyFor(userId), JSON.stringify(next))
+    } catch {
+      // Quota / tryb prywatny — ignorujemy, settings i tak pojda na serwer.
+    }
     return next
-  }
+  }, [userId])
 
   /** Zapisz na serwer z debounce 500ms (chroni przed spamem przy suwakach). */
   const scheduleSave = (): void => {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
     saveTimerRef.current = setTimeout(() => {
+      saveTimerRef.current = null
       void settingsApi.save(settingsRef.current).catch((err) => {
         console.warn('Zapis ustawien na serwer nie powiodl sie:', err)
       })
     }, 500)
   }
 
-  // Przy mount: fetch z serwera.
+  // Cleanup: przy odmontowaniu (logout) anuluj zalegly zapis.
+  // Bez tego debounce mogl wystrzelic po sesji i wyslac PUT bez tokenu.
+  useEffect(() => {
+    return () => {
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current)
+        saveTimerRef.current = null
+      }
+    }
+  }, [])
+
+  // Przy mount: fetch z serwera. Provider jest montowany tylko gdy user istnieje
+  // (patrz main.tsx → Root), wiec mount == swiezy login.
   useEffect(() => {
     let cancelled = false
     ;(async () => {
@@ -217,11 +267,13 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
           // Serwer ma settings - uzywamy ich (zrodlo prawdy).
           setSettings(persistLocal(remote))
         } else {
-          // Serwer nie ma - wgrywamy to co mamy lokalnie (migracja).
+          // Serwer nie ma - wgrywamy to co mamy lokalnie.
+          // Uwaga: to sa WYLACZNIE ustawienia tego usera (cache per-user lub
+          // defaults), wiec nie ma ryzyka przecieku miedzy kontami.
           await settingsApi.save(settingsRef.current)
         }
       } catch (err) {
-        // Blad sieci - zostajemy z localStorage, sprobujemy pozniej.
+        // Blad sieci - zostajemy z cache, sprobujemy pozniej.
         console.warn('Nie udalo sie pobrac ustawien z serwera:', err)
       } finally {
         if (!cancelled) setLoading(false)
@@ -230,10 +282,15 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [persistLocal])
 
-  /** Reczne dociagniecie z serwera (wywolywane przez WS listener w App). */
-  const refreshFromServer = async (): Promise<void> => {
+  /**
+   * Reczne dociagniecie z serwera (wywolywane przez WS listener w App).
+   * useCallback z dep [persistLocal] — stabilny dopoki userId sie nie zmieni,
+   * a userId zmienia sie tylko przez pelny remount providera (login/logout).
+   * Dzieki temu efekt App nie re-sie reconnectuje WS przy kazdym renderze.
+   */
+  const refreshFromServer = useCallback(async (): Promise<void> => {
     try {
       const remote = await settingsApi.get()
       if (remote) {
@@ -242,7 +299,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       console.warn('Refresh ustawien z serwera nie powiodl sie:', err)
     }
-  }
+  }, [persistLocal])
 
   const updateSettings = (partial: Partial<AppSettings>) => {
     setSettings((prev) => {
@@ -333,3 +390,4 @@ export function useSettings(): SettingsContextType {
 }
 
 export { defaultAiProfile }
+
