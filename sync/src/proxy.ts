@@ -193,8 +193,21 @@ export function makeProxyHandler(prefix: string, targetHeader: string) {
 
     if (upstream.status >= 300 && upstream.status < 400) {
       const location = upstream.headers.get('location')
+
+      // 3xx bez Location (np. 304 Not Modified) to nie błąd proxy —
+      // przepuszczamy oryginalną odpowiedź do klienta tak jak przyszła.
       if (!location) {
-        return c.json({ error: 'Upstream zwrócił redirect bez Location' }, 502)
+        const respHeaders = new Headers()
+        for (const [key, value] of upstream.headers) {
+          const lower = key.toLowerCase()
+          if (SKIP_RESP_HEADERS.has(lower)) continue
+          respHeaders.set(key, value)
+        }
+        return new Response(upstream.body, {
+          status: upstream.status,
+          statusText: upstream.statusText,
+          headers: respHeaders,
+        })
       }
 
       let redirectUrl: URL

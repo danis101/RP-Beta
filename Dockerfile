@@ -18,7 +18,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # --- Stage 2: runtime backendu ---
-FROM oven/bun:1-slim
+FROM oven/bun:1-alpine
 
 WORKDIR /app
 
