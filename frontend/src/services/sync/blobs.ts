@@ -88,5 +88,4 @@ export async function uploadBlobFromDataUrl(dataUrl: string): Promise<string> {
 
 /** Uploaduje blob z File (z input[type=file]). */
 export async function uploadBlobFromFile(file: File): Promise<string> {
-  const bytes = new Uint8Array(await file.arrayBuffer())
-  return uploadBl
+  const bytes = new Uint8Array(await file.arrayBuffer
