@@ -401,10 +401,6 @@ export default function App() {
     abortRef.current?.abort()
   }
 
-  /**
-   * Buduje liste wiadomosci do LLM. Async bo zalaczniki w formacie blob
-   * musza byc pobrane z serwera jako base64 (vision wymaga inline data URL).
-   */
   const buildMessages = async (history: ChatMessage[]): Promise<OpenAIMessage[]> => {
     if (!activeCharacter) return []
 
@@ -527,7 +523,6 @@ export default function App() {
 
     setIsTyping(true)
     setStreamingText('')
-    // 'regenerate' i 'replace' pokazuja streaming W MIEJSCU starej wiadomosci.
     setReplacingMessageId(mode === 'append' ? null : targetMessageId)
 
     let accumulated = ''
@@ -735,7 +730,6 @@ export default function App() {
         }),
       )
 
-      // Drugi przebieg: replace docelowo podmienia tymczasowy wariant.
       await runCompletion(history, tempId, 'replace', followUpMessages, toolResults, toolLabel)
 
       setStreamingText('')
@@ -797,14 +791,12 @@ export default function App() {
 
         if (targetIndex !== -1) {
           if (mode === 'regenerate') {
-            // Regeneracja: dodaj nowy wariant obok istniejacych (swipe/strzalki).
             messages[targetIndex] = {
               ...messages[targetIndex],
               variants: [...messages[targetIndex].variants, newVariant],
               selectedVariant: messages[targetIndex].variants.length,
             }
           } else {
-            // replace: podmien wszystkie warianty (uzywane przy follow-up tool).
             messages[targetIndex] = {
               ...messages[targetIndex],
               variants: [newVariant],
@@ -884,7 +876,6 @@ export default function App() {
     await runCompletion(updated.messages, userMessage.id, 'append')
   }
 
-  /** Dodaje nowy wariant do wiadomosci. Zwraca jego indeks (lub -1). */
   const appendVariant = (messageId: string, variant: MessageVariant): number => {
     const conv = conversationsRef.current.find((c) => c.id === activeId)
     const msg = conv?.messages.find((m) => m.id === messageId)
@@ -911,7 +902,6 @@ export default function App() {
     return newIdx
   }
 
-  /** Aktualizuje konkretny wariant (patch). Uzywane przy regeneracji obrazu. */
   const updateVariantAt = (
     messageId: string,
     variantIndex: number,
@@ -934,10 +924,6 @@ export default function App() {
     )
   }
 
-  /**
-   * Regeneracja samego obrazka - ten sam prompt do mostka, BEZ wywolywania LLM.
-   * Dodaje nowy wariant (swipe/strzalki dzialaja jak przy wiadomosciach tekstowych).
-   */
   const regenerateImage = async (messageId: string, prompt: string) => {
     const baseUrl = settings.imageGenBaseUrl
     const responseFormat = settings.imageGenResponseFormat
@@ -956,7 +942,6 @@ export default function App() {
       return
     }
 
-    // Nowy wariant od razu widoczny (user swipuje na niego, stary zachowany).
     const newIdx = appendVariant(messageId, {
       content: '',
       toolCall: {
@@ -1026,7 +1011,6 @@ export default function App() {
     const variant = target.variants[target.selectedVariant] ?? target.variants[0]
     const toolCall = variant?.toolCall
 
-    // Sam obrazek z zapisanym promptem (rozdzka) - regeneruj bez LLM.
     if (
       target.role === 'assistant' &&
       toolCall?.type === 'image' &&
@@ -1037,7 +1021,6 @@ export default function App() {
       return
     }
 
-    // Standardowa regeneracja LLM - append nowego wariantu.
     if (target.role === 'assistant') {
       await runCompletion(activeConversation.messages.slice(0, index), messageId, 'regenerate')
     } else {
@@ -1045,10 +1028,6 @@ export default function App() {
     }
   }
 
-  /**
-   * Swipe w lewo: nastepny wariant. Jesli juz jestesmy na ostatnim ->
-   * regeneruj (jak w ST/TAVO).
-   */
   const handleSwipeNext = (messageId: string) => {
     if (!activeConversation) return
     const msg = activeConversation.messages.find((m) => m.id === messageId)
@@ -1060,7 +1039,6 @@ export default function App() {
     }
   }
 
-  /** Swipe w prawo: poprzedni wariant. Nic nie robi na pierwszym. */
   const handleSwipePrev = (messageId: string) => {
     if (!activeConversation) return
     const msg = activeConversation.messages.find((m) => m.id === messageId)
@@ -1399,10 +1377,6 @@ export default function App() {
     runSummarizer(activeConversation)
   }
 
-  /**
-   * Generowanie obrazu z rozdzki. Zapisuje prompt w toolCall, zeby
-   * Regeneruj moglo odtworzyc ten sam obraz (dodajac nowy wariant).
-   */
   const handleGenerateImage = async () => {
     if (!activeConversation || !activeCharacter) return
     if (!settings.imageGenEnabled) return
@@ -1594,6 +1568,8 @@ export default function App() {
             <ChatList
               characters={characters}
               conversations={conversations}
+              personas={personas}
+              defaultPersonaId={settings.defaultPersonaId}
               activeId={activeId ?? ''}
               onSelect={setActiveId}
             />
