@@ -2,7 +2,7 @@
 
 A self-hosted, messenger-style frontend for roleplay and everyday conversations with language models. Bring your own model endpoint, create or import character cards, and keep your conversations and images on your own server.
 
-**Work in progress, already usable.** Core chat, character management, image generation, and server-backed storage are implemented. The project is under active development; synchronization, conflict handling, and configuration workflows are still being refined. Expect changes and keep backups before updating.
+**Work in progress, already usable.** Core chat, character management, image generation, and server-backed storage are implemented. Synchronization between multiple devices is functional; message-level merge on conflict is still being refined. Expect changes and keep backups before updating.
 
 RP is designed for a trusted **LAN or VPN**, with friends able to use the same model and image-generation services. It is not intended to be deployed as a public internet service.
 
@@ -16,9 +16,11 @@ RP is designed for a trusted **LAN or VPN**, with friends able to use the same m
 - **Image generation** through an OpenAI-compatible image bridge, with prompt refinement and image regeneration.
 - **Web search** through SearXNG and model tool calls.
 - **Conversation summaries and editable long-term memory.**
-- **Multiple user accounts**, created and managed by an administrator.
-- **Server-backed settings and content**, with WebSocket change notifications and conflict handling under development.
-- **Blob storage** for new portraits, avatars, attachments, and generated images. Legacy inline images remain supported.
+- **Multiple user accounts**, created and managed by an administrator, with per-user settings isolation.
+- **Session management** — password changes and admin resets invalidate active sessions; per-account session versioning keeps tokens scoped.
+- **Server-backed settings and content**, with WebSocket change notifications.
+- **Blob storage** for new portraits, avatars, attachments, and generated images, with garbage collection that protects freshly uploaded files. Legacy inline images remain supported.
+- **Integration proxy** for model, search, and image services — authenticated, allowlist-scoped, and timeout-bounded.
 - **English and Polish UI.**
 
 ## How it runs
@@ -31,7 +33,7 @@ One Docker container serves both the web interface and the API on port `8787`.
 | Backend | Bun, Hono |
 | Storage | SQLite and content-addressed image files |
 | Updates across devices | WebSocket notifications |
-| Authentication | JWT sessions and Argon2id password hashing |
+| Authentication | JWT sessions with per-account session versioning, Argon2id password hashing |
 
 Model inference, SearXNG, and image generation run as **separate services**. They are not bundled with this container. Configure the services you want to use in the app; optional integrations are not required for basic model chat.
 
@@ -53,27 +55,27 @@ cp .env.example .env
 
 On Windows PowerShell:
 
-```powershell
+```
 Copy-Item .env.example .env
 ```
 
 Edit `.env` and replace the example values:
 
 | Variable | Purpose |
-| --- | --- |
+|---|---|
 | `JWT_SECRET` | A long, random secret used to sign login sessions |
 | `ADMIN_USERNAME` | Initial administrator username |
 | `ADMIN_PASSWORD` | Initial administrator password, at least 8 characters |
 
 For example, generate a secret on Linux/macOS with:
 
-```bash
+```
 openssl rand -hex 32
 ```
 
 Or in PowerShell:
 
-```powershell
+```
 $secretBytes = New-Object byte[] 32
 $generator = [System.Security.Cryptography.RandomNumberGenerator]::Create()
 $generator.GetBytes($secretBytes)
@@ -83,9 +85,18 @@ $generator.Dispose()
 
 Copy the generated value into `JWT_SECRET`. Keep `.env` private.
 
+Optional environment variables (sensible defaults built in; set only if you need to change behavior):
+
+| Variable ↕▾ | Default ↕▾ | Purpose ↕▾ |
+|---|---|---|
+| −`PROXY_ALLOWED_HOSTS` | *(empty)* | Comma-separated hosts allowed as integration proxy targets. Empty means private LAN addresses only. Add public hostnames here if your model/image/search services live outside your LAN. |
+| `PROXY_TIMEOUT_MS` | `15000` | Per-request timeout for the integration proxy. Raise it if your image generator or cold-start model takes longer than 15 seconds. |
+| `GC_MIN_BLOB_AGE_MS` | `3600000` (1h) | Age below which uploaded blobs are protected from garbage collection even without references. |
+⚙
+
 ### 3. Start the application
 
-```bash
+```
 docker compose up -d --build
 ```
 
@@ -107,34 +118,56 @@ Integration requests pass through the RP backend, so service addresses must be r
 
 For image generation, configure a compatible image bridge separately. For web search, configure your SearXNG instance.
 
+If your services are on public hostnames (rather than private LAN IPs), add them to `PROXY_ALLOWED_HOSTS` in `.env`. The proxy refuses public hosts by default to prevent the server from being used as an open relay.
+
 ## User accounts and shared services
 
 Only an administrator can create accounts; there is no public registration. Open the shield icon in the app or visit [the local admin panel](http://localhost:8787/#/admin).
 
-New accounts receive a starter assistant card and a user persona. Accounts can use the same model servers, image bridge, and API credentials when shared intentionally by their owners.
+Administrator actions in the panel:
 
-Settings, including AI profiles and any saved API keys, are stored on the RP server and cached in the browser. Treat the database, browser profile, and backups accordingly. This is a trusted-group application, not a hardened multi-tenant service.
+- **Create an account.** New accounts receive a starter assistant card and a user persona.
+- **Reset a password.** The target user is signed out from all devices immediately.
+- **Delete an account.** All of the account's entities, blobs, and active sessions are removed.
+
+Users manage their own password from **Settings → Account**. Changing it invalidates the user's other active sessions (other devices stay signed out until re-login); the current session remains active.
+
+Per-user data:
+
+- Settings, AI profiles, and any saved API keys are stored **per account** on the RP server and cached in the browser under a per-user key. Different accounts on the same browser do not share configuration.
+- Accounts can share the same model servers, image bridge, and API credentials when their owners configure them to point at the same backends.
+
+Treat the database, browser profile, and backups accordingly. This is a trusted-group application, not a hardened multi-tenant service.
 
 ## Development status
 
-The application is usable, but some workflows still need attention:
+The application is usable and suitable for a trusted group on a LAN or VPN. Known limitations, all tracked for future work:
 
-- **Concurrent editing:** conflict handling is implemented, but simultaneous edits to the same conversation may lose edits or restore deleted messages. Prefer one device at a time for editing a conversation; refresh after reconnecting.
-- **Settings initialization:** the current browser cache is shared across logins. A new account without server settings can inherit the previously cached configuration. User-scoped caching and explicit initialization are planned.
-- **Image cleanup:** uploaded images use blob storage, but cleanup behavior around unsaved uploads is being refined. Keep important source images and backups.
-- **API profile preset exchange:** explicit JSON export/import, with optional inclusion of API keys, is planned and is not yet implemented.
+- **Concurrent message editing:** the merge strategy uses per-message last-write-wins with tombstones (deleted messages stay deleted across devices). Local edits made in the same second as a remote write may still resolve in favor of the server. Prefer one device at a time for editing an existing conversation; refresh after reconnecting.
+- **Conversation save queue:** each conversation change triggers an independent PUT. Rapid edits on slow networks may benefit from a save queue and a visible saving/error indicator; this is planned.
+- **API profile preset exchange:** explicit JSON export/import, with optional inclusion of API keys, is not yet implemented. Configure each profile manually per account for now.
+- **Tool toggles:** the model may attempt a tool call even when the corresponding toggle in Settings is off. The registry currently sends all tool declarations unconditionally; per-call filtering is planned.
+- **Card editor metadata:** saving an open card editor repeatedly may send stale version metadata. A proper accept-remote flow is planned.
+- **Summarizer boundary:** the summarizer marks the current message count as processed; messages appended during summarization may be skipped in the next cycle. Message-ID based tracking is planned.
+- **Large `App.tsx`:** logic for saving, generation, and image handling is scheduled to be extracted into dedicated modules.
 
-Further work includes more predictable saves, synchronization regression tests, and removal of unused code. Existing legacy image fields are retained for compatibility with older data.
+Existing legacy image fields (`portrait`, `avatar`, `data`) are retained for compatibility with older data and will not be removed without a migration.
 
 ## Network access
 
 Use RP on a trusted LAN or through a VPN such as WireGuard or Tailscale. The application does not provide HTTPS itself. A reverse proxy can provide TLS, but TLS alone does not make this version suitable for public exposure.
 
-The integration proxy routes currently accept client-supplied destinations without requiring an RP login. Keep access to the application port restricted to your trusted network.
+The integration proxy (`/llm-proxy`, `/searxng-proxy`, `/images-proxy`) requires an authenticated RP session and only forwards requests to allowlisted destinations:
+
+- Private LAN addresses (`10.*`, `172.16-31.*`, `192.168.*`, `127.*`, link-local) are allowed by default.
+- Public hostnames and IPs are refused unless explicitly listed in `PROXY_ALLOWED_HOSTS`.
+- Redirects are not followed automatically; a single redirect hop is allowed only to another allowlisted target.
+
+Keep access to the application port restricted to your trusted network anyway. RP is not a hardened service against hostile traffic.
 
 To change the host port, edit the left side of the mapping in `docker-compose.yml`, for example:
 
-```yaml
+```
 ports:
   - "8088:8787"
 ```
@@ -145,7 +178,7 @@ Then run `docker compose up -d` and open the new host port.
 
 The default Compose configuration stores persistent data in `./data` on the host:
 
-```text
+```
 data/
 ├── rp-sync.sqlite       # Accounts, settings, content, and blob metadata
 └── blobs/               # Uploaded image files, organized by user and hash
@@ -155,7 +188,7 @@ SQLite may also create WAL and shared-memory files. Back up the **whole director
 
 For a simple consistent backup, stop the application before copying the data. On Linux/macOS:
 
-```bash
+```
 docker compose stop
 tar -czf "rp-backup-$(date +%Y%m%d-%H%M%S).tar.gz" data/
 docker compose start
@@ -169,7 +202,7 @@ To restore, stop the application, preserve the current data elsewhere, restore t
 
 Back up your data first. For a Git checkout:
 
-```bash
+```
 git pull
 docker compose up -d --build
 ```
@@ -178,27 +211,28 @@ For a ZIP installation, update the source files while preserving `.env` and `dat
 
 Useful commands:
 
-```bash
+```
 docker compose ps
 docker compose logs --tail=100 rp
 ```
 
 ## Project layout
 
-```text
+```
 RP-Beta/
 ├── frontend/
 │   └── src/
-│       ├── components/     # Chat, cards, settings, and admin UI
+│       ├── components/     # Chat, cards, settings, admin, and account UI
 │       ├── context/        # Authentication, settings, and conflict state
 │       ├── services/       # Model adapters and backend clients
 │       └── lib/            # Prompts, formatting, images, and merge logic
 ├── sync/
 │   └── src/
 │       ├── routes/         # Accounts, entities, settings, and blobs
+│       ├── auth.ts         # JWT, session versioning, and password hashing
 │       ├── db.ts           # SQLite schema
-│       ├── proxy.ts        # Requests to external integrations
-│       ├── ws.ts           # Change notifications
+│       ├── proxy.ts        # Authenticated, allowlisted integration proxy
+│       ├── ws.ts           # Change notifications and session revocation
 │       └── gc.ts           # Blob and deleted-entity cleanup
 ├── Dockerfile
 ├── docker-compose.yml
@@ -208,3 +242,4 @@ RP-Beta/
 ## License
 
 A project license has not been specified yet.
+
