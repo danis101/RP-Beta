@@ -5,12 +5,16 @@
  * Pierwsze konto admina seeduje się z env przy starcie.
  *
  * Login ma rate limit (LOGIN_RATE_LIMIT / LOGIN_RATE_WINDOW_MS per IP).
+ *
+ * Sesje: token zawiera `sv` (session_version z chwili logowania). Zmiana hasła
+ * bumpuje `sv` — unieważnia wszystkie istniejące tokeny tego usera.
  */
 
 import { Hono } from 'hono'
 import { db } from '../db'
 import {
   authMiddleware,
+  bumpUserSessionVersion,
   createToken,
   hashPassword,
   validatePassword,
@@ -25,6 +29,7 @@ interface UserRow {
   username: string
   password_hash: string
   is_admin: number
+  session_version: number
   created_at: number
 }
 
@@ -75,7 +80,7 @@ authRoutes.post('/login', async (c) => {
     return c.json({ error: 'Nieprawidłowe dane logowania' }, 401)
   }
 
-  const token = await createToken(user.id, user.username)
+  const token = await createToken(user.id, user.username, user.session_version)
   return c.json({
     token,
     user: {
@@ -94,7 +99,11 @@ authRoutes.get('/me', authMiddleware, (c) => {
   })
 })
 
-/** Zmiana własnego hasła. Wymaga podania starego hasła. */
+/**
+ * Zmiana własnego hasła. Wymaga podania starego hasła.
+ * Po zmianie bumpuje session_version — wszystkie istniejące sesje (w tym
+ * bieżąca) przestają działać, trzeba zalogować się ponownie.
+ */
 authRoutes.post('/change-password', authMiddleware, async (c) => {
   const userId = c.get('userId')
   const body = await c.req.json().catch(() => null)
@@ -122,6 +131,8 @@ authRoutes.post('/change-password', authMiddleware, async (c) => {
 
   const hash = await hashPassword(newPassword)
   db.run('UPDATE users SET password_hash = ? WHERE id = ?', [hash, userId])
+  bumpUserSessionVersion(userId)
 
   return c.json({ ok: true })
 })
+

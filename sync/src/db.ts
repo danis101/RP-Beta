@@ -2,7 +2,8 @@
  * Warstwa bazy danych — bun:sqlite + schemat.
  *
  * Tabele:
- *   users     — konta (username unique, password_hash argon2id, is_admin flag)
+ *   users     — konta (username unique, password_hash argon2id, is_admin flag,
+ *               session_version — bumpowane przy zmianie hasła / unieważnieniu sesji)
  *   blobs     — metadane plików blobów, dedup per (user_id, sha256)
  *   entities  — generyczna tabela encji (character/persona/conversation/style/lorebook)
  *
@@ -34,11 +35,12 @@ db.exec('PRAGMA busy_timeout = 5000')
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
-    id            TEXT PRIMARY KEY,
-    username      TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    is_admin      INTEGER NOT NULL DEFAULT 0,
-    created_at    INTEGER NOT NULL
+    id              TEXT PRIMARY KEY,
+    username        TEXT UNIQUE NOT NULL,
+    password_hash   TEXT NOT NULL,
+    is_admin        INTEGER NOT NULL DEFAULT 0,
+    session_version INTEGER NOT NULL DEFAULT 1,
+    created_at      INTEGER NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS blobs (
@@ -71,7 +73,7 @@ db.exec(`
 `)
 
 /**
- * Migracja addytywna: dodaj `is_admin` jeśli brakuje (starsze bazy).
+ * Migracja addytywna: dodaj kolumnę jeśli brakuje (starsze bazy).
  * Bezpieczne wielokrotne wywołanie — sprawdzamy PRAGMA table_info.
  */
 function ensureColumn(table: string, column: string, definition: string): void {
@@ -82,8 +84,10 @@ function ensureColumn(table: string, column: string, definition: string): void {
 }
 
 ensureColumn('users', 'is_admin', 'INTEGER NOT NULL DEFAULT 0')
+ensureColumn('users', 'session_version', 'INTEGER NOT NULL DEFAULT 1')
 
 /** Ścieżka pliku bloba na dysku — z shardingiem po 2 pierwszych znakach sha. */
 export function blobPath(userId: string, sha256: string): string {
   return `${BLOBS_DIR}/${userId}/${sha256.slice(0, 2)}/${sha256}`
 }
+

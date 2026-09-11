@@ -6,6 +6,13 @@
  *
  * Uwaga o Hono >= 4.6: `verify` wymaga jawnego `alg` w opcjach.
  * Bez tego rzuca JwtAlgorithmRequired. Ustawiamy 'HS256' w JWT_ALG.
+ *
+ * Sesje:
+ *   Każdy token niesie `sv` (session_version) zalogowanego usera w chwili
+ *   wystawienia. Middleware sprawdza zgodność `sv` z aktualnym w bazie.
+ *   Bump `sv` (przy zmianie hasła, przy admin reset hasła) unieważnia
+ *   WSZYSTKIE istniejące tokeny tego usera — bezpieczne wylogowanie globalne.
+ *   Usunięcie konta powoduje że user nie istnieje w bazie → 401.
  */
 
 import { sign, verify } from 'hono/jwt'
@@ -27,6 +34,8 @@ export type AppEnv = {
 export interface JwtPayload {
   sub: string
   username: string
+  /** session_version w chwili wystawienia tokenu. */
+  sv: number
   exp: number
   [key: string]: unknown
 }
@@ -47,10 +56,15 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
 
 // --- Tokeny ---
 
-export async function createToken(userId: string, username: string): Promise<string> {
+export async function createToken(
+  userId: string,
+  username: string,
+  sessionVersion: number,
+): Promise<string> {
   const payload: JwtPayload = {
     sub: userId,
     username,
+    sv: sessionVersion,
     exp: Math.floor(Date.now() / 1000) + JWT_TTL_SECONDS,
   }
   return sign(payload, JWT_SECRET, JWT_ALG)
@@ -68,12 +82,38 @@ export async function verifyToken(token: string): Promise<JwtPayload | null> {
   }
 }
 
+// --- Stan konta / sesji ---
+
+export interface UserSessionInfo {
+  isAdmin: boolean
+  sessionVersion: number
+}
+
+/**
+ * Świeży odczyt stanu usera z bazy.
+ * Zwraca `null` jeśli konto nie istnieje — middleware na tej podstawie
+ * odrzuca tokeny usuniętych kont.
+ */
+export function getUserSessionInfo(userId: string): UserSessionInfo | null {
+  const row = db
+    .query('SELECT is_admin, session_version FROM users WHERE id = ?')
+    .get(userId) as { is_admin: number; session_version: number } | null
+  if (!row) return null
+  return { isAdmin: row.is_admin === 1, sessionVersion: row.session_version }
+}
+
+/**
+ * Bump wersji sesji — unieważnia wszystkie aktywne tokeny tego usera.
+ * Wywoływane przy zmianie hasła (własnego i przez admina).
+ */
+export function bumpUserSessionVersion(userId: string): void {
+  db.run('UPDATE users SET session_version = session_version + 1 WHERE id = ?', [userId])
+}
+
 /** Sprawdza, czy user o danym id ma uprawnienia admina (świeży odczyt z bazy). */
 export function isUserAdmin(userId: string): boolean {
-  const row = db
-    .query('SELECT is_admin FROM users WHERE id = ?')
-    .get(userId) as { is_admin: number } | null
-  return row?.is_admin === 1
+  const info = getUserSessionInfo(userId)
+  return info?.isAdmin === true
 }
 
 // --- Walidacja danych wejściowych ---
@@ -92,6 +132,54 @@ export function validatePassword(password: string): string | null {
   return null
 }
 
+// --- Wspólna weryfikacja tokenu + sesji ---
+
+interface SessionCheckOk {
+  ok: true
+  userId: string
+  username: string
+  isAdmin: boolean
+}
+
+interface SessionCheckErr {
+  ok: false
+  status: number
+  error: string
+}
+
+/**
+ * Wspólna logika dla HTTP i WS: weryfikuje token, sprawdza że user istnieje
+ * i że session_version w tokenie zgadza się z bazą.
+ */
+export async function verifySession(token: string): Promise<SessionCheckOk | SessionCheckErr> {
+  const payload = await verifyToken(token)
+  if (!payload) {
+    return { ok: false, status: 401, error: 'Nieprawidłowy lub wygasły token' }
+  }
+
+  const sv = typeof payload.sv === 'number' ? payload.sv : null
+  if (sv === null) {
+    // Stary token sprzed wersjonowania sesji — odrzucamy.
+    return { ok: false, status: 401, error: 'Token bez wersji sesji. Zaloguj się ponownie.' }
+  }
+
+  const info = getUserSessionInfo(payload.sub)
+  if (!info) {
+    return { ok: false, status: 401, error: 'Konto nie istnieje' }
+  }
+
+  if (info.sessionVersion !== sv) {
+    return { ok: false, status: 401, error: 'Sesja wygasła. Zaloguj się ponownie.' }
+  }
+
+  return {
+    ok: true,
+    userId: payload.sub,
+    username: payload.username,
+    isAdmin: info.isAdmin,
+  }
+}
+
 // --- Middleware ---
 
 /** Wymaga nagłówka `Authorization: Bearer <token>`. */
@@ -103,14 +191,14 @@ export const authMiddleware = createMiddleware<AppEnv>(async (c, next) => {
     return c.json({ error: 'Brak tokenu autoryzacji' }, 401)
   }
 
-  const payload = await verifyToken(token)
-  if (!payload) {
-    return c.json({ error: 'Nieprawidłowy lub wygasły token' }, 401)
+  const result = await verifySession(token)
+  if (!result.ok) {
+    return c.json({ error: result.error }, result.status as 401)
   }
 
-  c.set('userId', payload.sub)
-  c.set('username', payload.username)
-  c.set('isAdmin', isUserAdmin(payload.sub))
+  c.set('userId', result.userId)
+  c.set('username', result.username)
+  c.set('isAdmin', result.isAdmin)
   await next()
 })
 
@@ -149,14 +237,14 @@ export const proxyAuthMiddleware = createMiddleware<AppEnv>(async (c, next) => {
     )
   }
 
-  const payload = await verifyToken(token)
-  if (!payload) {
-    return c.json({ error: 'Nieprawidłowy lub wygasły token proxy' }, 401)
+  const result = await verifySession(token)
+  if (!result.ok) {
+    return c.json({ error: result.error }, result.status as 401)
   }
 
-  c.set('userId', payload.sub)
-  c.set('username', payload.username)
-  c.set('isAdmin', isUserAdmin(payload.sub))
+  c.set('userId', result.userId)
+  c.set('username', result.username)
+  c.set('isAdmin', result.isAdmin)
   await next()
 })
 

@@ -2,8 +2,8 @@
  * Endpointy administracyjne (wymagają is_admin):
  *   GET    /admin/users                — lista kont
  *   POST   /admin/users                — utwórz konto (z seedem Asystent + Persona)
- *   DELETE /admin/users/:id            — usuń konto (twardo + ich encje + bloby)
- *   PATCH  /admin/users/:id/password   — zmień hasło innego usera
+ *   DELETE /admin/users/:id            — usuń konto (twardo + ich encje + bloby + WS)
+ *   PATCH  /admin/users/:id/password   — zmień hasło innego usera (unieważnia jego sesje)
  *
  * Admin nie może usunąć samego siebie (żeby nie zostawić serwera bez admina).
  */
@@ -15,12 +15,14 @@ import { db, BLOBS_DIR } from '../db'
 import {
   adminMiddleware,
   authMiddleware,
+  bumpUserSessionVersion,
   hashPassword,
   validatePassword,
   validateUsername,
   type AppEnv,
 } from '../auth'
 import { seedUserContent } from '../seed'
+import { closeAllForUser } from '../ws'
 
 interface UserRow {
   id: string
@@ -76,7 +78,7 @@ adminRoutes.post('/users', async (c) => {
   const now = Date.now()
 
   db.run(
-    'INSERT INTO users (id, username, password_hash, is_admin, created_at) VALUES (?, ?, ?, ?, ?)',
+    'INSERT INTO users (id, username, password_hash, is_admin, session_version, created_at) VALUES (?, ?, ?, ?, 1, ?)',
     [id, username, hash, isAdmin ? 1 : 0, now],
   )
 
@@ -110,6 +112,10 @@ adminRoutes.delete('/users/:id', async (c) => {
   db.run('DELETE FROM blobs WHERE user_id = ?', [targetId])
   db.run('DELETE FROM users WHERE id = ?', [targetId])
 
+  // Zamknij wszystkie aktywne połączenia WS tego usera — bez tego
+  // dostawałby eventy aż do zamknięcia po swojej stronie.
+  closeAllForUser(targetId)
+
   // Katalog blobów tego usera — usuń rekurencyjnie (best effort).
   try {
     await rm(join(BLOBS_DIR, targetId), { recursive: true, force: true })
@@ -120,6 +126,10 @@ adminRoutes.delete('/users/:id', async (c) => {
   return c.json({ ok: true })
 })
 
+/**
+ * Zmiana hasła innego usera przez admina.
+ * Bumpuje session_version — wszystkie istniejące sesje tego usera padają.
+ */
 adminRoutes.patch('/users/:id/password', async (c) => {
   const targetId = c.req.param('id')
   const body = await c.req.json().catch(() => null)
@@ -138,6 +148,8 @@ adminRoutes.patch('/users/:id/password', async (c) => {
 
   const hash = await hashPassword(newPassword)
   db.run('UPDATE users SET password_hash = ? WHERE id = ?', [hash, targetId])
+  bumpUserSessionVersion(targetId)
 
   return c.json({ ok: true })
 })
+

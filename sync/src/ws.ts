@@ -53,9 +53,28 @@ export function broadcast(userId: string, event: EntityChangedEvent): void {
   }
 }
 
+/**
+ * Zamyka wszystkie aktywne połączenia WS danego usera.
+ * Wywoływane przy DELETE konta — żeby nie dostawał eventów po skasowaniu.
+ */
+export function closeAllForUser(userId: string): void {
+  const set = connections.get(userId)
+  if (!set) return
+
+  for (const ws of set) {
+    try {
+      ws.close(4001, 'session ended')
+    } catch {
+      // kanał mógł już być zamknięty po drugiej stronie
+    }
+  }
+  connections.delete(userId)
+}
+
 /** Diagnostyka - ile aktywnych sesji na usera (do /health). */
 export function connectionStats(): { users: number; connections: number } {
   let total = 0
   for (const set of connections.values()) total += set.size
   return { users: connections.size, connections: total }
 }
+

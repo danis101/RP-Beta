@@ -3,10 +3,14 @@
  *
  * Stack: Bun + Hono + bun:sqlite.
  * Auth: JWT (HS256), hasla argon2id, konta tworzone przez admina.
+ * Sesje: JWT niesie `sv` (session_version). Zmiana hasła / delete konta
+ *        unieważnia tokeny (middleware sprawdza zgodność z bazą).
  * Realtime: WebSocket push o zmianach encji i ustawien.
- * Bloby: content-addressed (sha256), dedup per-user, GC co 24h.
+ * Bloby: content-addressed (sha256), dedup per-user, GC co 24h z okresem
+ *        ochronnym dla świeżych uploadów.
  * Proxy: /llm-proxy, /searxng-proxy, /images-proxy - posredniczy do uslug HTTP
- *        (LM Studio, SearXNG, mostek ComfyUI) z HTTPS strony.
+ *        (LM Studio, SearXNG, mostek ComfyUI) z HTTPS strony. Wymaga auth
+ *        (X-RP-Auth) i respektuje allowlistę celów.
  *
  * W trybie produkcyjnym (Docker) serwuje tez statyki frontendu z ./public.
  */
@@ -23,7 +27,7 @@ import { createEntityRoutes } from './routes/entities'
 import { adminRoutes } from './routes/admin'
 import { settingsRoutes } from './routes/settings'
 import { makeProxyHandler } from './proxy'
-import { verifyToken, proxyAuthMiddleware, type AppEnv } from './auth'
+import { verifySession, proxyAuthMiddleware, type AppEnv } from './auth'
 import { register, unregister, connectionStats } from './ws'
 import { PORT } from './config'
 import { seedAdminIfNeeded } from './seed'
@@ -54,7 +58,7 @@ app.use(
 app.get('/health', (c) => {
   return c.json({
     ok: true,
-    version: '0.3.3',
+    version: '0.3.4',
     ws: connectionStats(),
     time: new Date().toISOString(),
   })
@@ -82,15 +86,17 @@ app.route('/styles', createEntityRoutes('style'))
 app.route('/lorebooks', createEntityRoutes('lorebook'))
 
 // --- WebSocket ---
+// Sesja sprawdzana jak w HTTP: token + istnienie usera + zgodność sv.
+// Bez tego token usuniętego konta nadal mógłby się łączyć i dostawać eventy.
 app.use('/ws', async (c, next) => {
   const token = c.req.query('token') ?? ''
-  const payload = await verifyToken(token)
-  if (!payload) {
-    return c.text('Nieautoryzowany', 401)
+  const result = await verifySession(token)
+  if (!result.ok) {
+    return c.text(result.error, 401)
   }
-  c.set('userId', payload.sub)
-  c.set('username', payload.username)
-  c.set('isAdmin', false)
+  c.set('userId', result.userId)
+  c.set('username', result.username)
+  c.set('isAdmin', result.isAdmin)
   await next()
 })
 
@@ -133,7 +139,7 @@ if (existsSync(PUBLIC_DIR)) {
   console.log('[rp-sync] brak katalogu ./public - tryb API-only (dev)')
 }
 
-app.get('/', (c) => c.json({ name: 'rp-sync', version: '0.3.3' }))
+app.get('/', (c) => c.json({ name: 'rp-sync', version: '0.3.4' }))
 
 app.notFound((c) => c.json({ error: 'Nie znaleziono' }, 404))
 
