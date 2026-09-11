@@ -167,12 +167,6 @@ export type MessageRole = 'user' | 'assistant'
 
 /**
  * Tool call (obraz lub websearch).
- *
- * Obraz:
- *   - `imageBlobId` (nowy format) - sha256 bloba. Preferowany.
- *   - `imageUrl` (stary format) - base64 data URL. Deprecated.
- *   - `prompt` - prompt wyslany do mostka. Zapisany zeby mozna bylo
- *     zregenerowac obraz bez wywolywania LLM ponownie.
  */
 export interface ToolCall {
   type: 'image' | 'websearch'
@@ -200,7 +194,6 @@ export interface WebSearchResult {
 
 /**
  * Zalacznik do wiadomosci (np. obraz).
- * `blobId` (nowy) lub `data` (stary base64, deprecated).
  */
 export interface MessageAttachment {
   type: 'image'
@@ -231,6 +224,13 @@ export interface ChatMessage {
   variants: MessageVariant[]
   selectedVariant: number
   timestamp: number
+  /**
+   * Timestamp ostatniej modyfikacji (edit treści, dodanie wariantu, zmiana
+   * wybranego wariantu). Uzywany przy merge rozmow do rozstrzygniecia
+   * konfliktu LWW (last-write-wins). Jesli brak — bierzemy `timestamp`
+   * jako fallback (starsze dane sprzed migracji).
+   */
+  _updatedAt?: number
 }
 
 export interface LongTermMemoryEntry {
@@ -250,6 +250,18 @@ export interface Conversation {
   lorebookIds?: string[]
   longTermMemory: LongTermMemoryEntry[]
   lastSummarizedIndex: number
+  /**
+   * Tombstones — ID wiadomosci ktore zostaly usuniete. Trzymamy je osobno
+   * (zamiast flagi na wiadomosci), zeby:
+   *   - merge nie przywracal usunietych wiadomosci z drugiego urzadzenia
+   *   - nie modyfikowac istniejacej struktury `messages` (UI dziala
+   *     na widocznej liscie, tombstones sa tylko metadanymi)
+   *
+   * Przy kazdym merge union obu list — jesli na jednym urzadzeniu usunieto,
+   * a na drugim nie, usuniecie wygrywa (bezpieczniej nie wskrzeszac).
+   */
+  _deletedMessageIds?: string[]
   _serverCreatedAt?: number
   _serverUpdatedAt?: number
 }
+

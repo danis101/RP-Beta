@@ -17,11 +17,33 @@ export function makeMessage(
   content: string,
   toolCall?: MessageVariant['toolCall'],
 ): ChatMessage {
+  const now = Date.now()
   return {
     id,
     role,
     variants: [{ content, toolCall }],
     selectedVariant: 0,
-    timestamp: Date.now(),
+    timestamp: now,
+    _updatedAt: now,
   }
 }
+
+/**
+ * Zwraca timestamp ostatniej modyfikacji wiadomości — dla danych sprzed
+ * migracji (bez `_updatedAt`) fallbackuje na `timestamp`.
+ */
+export function getMessageUpdatedAt(msg: ChatMessage): number {
+  return msg._updatedAt ?? msg.timestamp
+}
+
+/** Lista widocznych wiadomości (bez tombstone'ów). */
+export function visibleMessages(conv: {
+  messages: ChatMessage[]
+  _deletedMessageIds?: string[]
+}): ChatMessage[] {
+  const deleted = conv._deletedMessageIds
+  if (!deleted || deleted.length === 0) return conv.messages
+  const set = new Set(deleted)
+  return conv.messages.filter((m) => !set.has(m.id))
+}
+
