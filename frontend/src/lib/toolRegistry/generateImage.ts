@@ -8,8 +8,8 @@ import { uploadBlobFromBlob } from '../../services/sync'
  * Przeplyw: kontekst (karta postaci + ostatnie wiadomosci) -> refiner (osobny LLM)
  *          -> czysty positive prompt -> mostek ComfyUI -> blob na /blobs.
  *
- * Obraz zapisujemy jako blob (sha256) zamiast base64 inline - baza danych
- * odchudza sie, a GC sprzata osierocone bloby z usunietych wiadomosci.
+ * `prompt` zapisujemy w toolCall, zeby mozna bylo zregenerowac obraz
+ * bez wywolywania LLM ponownie (przycisk Regeneruj przy wiadomosci-obrazie).
  */
 export const generateImageTool: ToolDef = {
   name: 'generate_image',
@@ -77,7 +77,6 @@ export const generateImageTool: ToolDef = {
       const result = await generateImage(prompt, { baseUrl, responseFormat })
 
       if (result.status === 'done') {
-        // Upload do /blobs - trwale w bazie zamiast base64 w wariancie.
         const blobId = await uploadBlobFromBlob(result.blob, 'generated.png')
         return {
           toolCall: {
@@ -85,6 +84,7 @@ export const generateImageTool: ToolDef = {
             label: description || 'Wygenerowany obraz',
             imageBlobId: blobId,
             status: 'done',
+            prompt,
           },
         }
       }
@@ -95,6 +95,7 @@ export const generateImageTool: ToolDef = {
             label: description || 'Generowanie obrazu',
             status: 'generating',
             error: 'Generowanie trwa dluzej niz 45s. Obraz pojawi sie wkrotce.',
+            prompt,
           },
         }
       }
@@ -104,6 +105,7 @@ export const generateImageTool: ToolDef = {
           label: description || 'Generowanie obrazu',
           status: 'error',
           error: result.message,
+          prompt,
         },
       }
     } catch (error) {

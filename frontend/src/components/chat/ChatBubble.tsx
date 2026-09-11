@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Globe, ChevronDown, ExternalLink, Search, AlertCircle, Loader2, ImageOff } from 'lucide-react'
-import type { ChatMessage } from '../../types'
+import type { ChatMessage, ToolCall } from '../../types'
 import { getSelectedVariant } from '../../lib/messages'
 import { renderFormattedText } from '../../lib/FormattedText'
 import { substituteTokens, type TokenContext } from '../../lib/tokens'
@@ -15,8 +15,12 @@ interface ChatBubbleProps {
 
 /**
  * Pojedyncza wiadomosc w czacie.
- * Obsluguje tool calls: websearch, image (blobId lub legacy data URL),
- * oraz zalaczniki (blobId lub legacy data URL).
+ *
+ * Tool call image:
+ *   - GDY jest tekst (postac cos pisze + generuje obraz) -> obrazek w dymku,
+ *     zaraz pod tekstem - wizualnie czesc odpowiedzi postaci.
+ *   - GDY nie ma tekstu (rozdzka - user sam generuje) -> obrazek pod dymkiem,
+ *     samodzielny element bez tla.
  */
 export default function ChatBubble({ message, tokens }: ChatBubbleProps) {
   const { settings } = useSettings()
@@ -37,8 +41,9 @@ export default function ChatBubble({ message, tokens }: ChatBubbleProps) {
 
   const openLightbox = (src: string) => setLightboxSrc(src)
 
-  // Rozwiazujemy blobId -> URL. Dla legacy data URL zwraca od razu.
   const imageSrc = useBlobSrc(toolCall?.type === 'image' ? (toolCall.imageBlobId ?? toolCall.imageUrl) : undefined)
+
+  const imageTool = toolCall?.type === 'image' ? toolCall : undefined
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -61,8 +66,8 @@ export default function ChatBubble({ message, tokens }: ChatBubbleProps) {
           </div>
         )}
 
-        {/* Message content */}
-        {rawContent && (
+        {/* Message content + obrazek w dymku (gdy jest tekst) */}
+        {(rawContent || (imageTool && rawContent !== undefined && imageTool.status === 'generating' && isUser === false)) && rawContent ? (
           <div
             className={`whitespace-pre-wrap break-words px-3.5 py-2.5 text-[13.5px] leading-relaxed ${
               isUser
@@ -78,6 +83,28 @@ export default function ChatBubble({ message, tokens }: ChatBubbleProps) {
                   settings.formattingColors,
                   openLightbox,
                 )}
+            {imageTool && (
+              <ImageInBubble
+                toolCall={imageTool}
+                imageSrc={imageSrc}
+                imageFailed={imageFailed}
+                onImageError={() => setImageFailed(true)}
+                onImageClick={openLightbox}
+              />
+            )}
+          </div>
+        ) : null}
+
+        {/* Sam obrazek (bez tekstu) - poza dymkiem */}
+        {!rawContent && imageTool && (
+          <div className="mt-1">
+            <ImageStandalone
+              toolCall={imageTool}
+              imageSrc={imageSrc}
+              imageFailed={imageFailed}
+              onImageError={() => setImageFailed(true)}
+              onImageClick={openLightbox}
+            />
           </div>
         )}
 
@@ -123,53 +150,7 @@ export default function ChatBubble({ message, tokens }: ChatBubbleProps) {
           )
         )}
 
-        {/* Tool call - image */}
-        {toolCall?.type === 'image' && (
-          <div className="mt-1">
-            {toolCall.status === 'error' ? (
-              <div className="flex items-center gap-2 rounded-xl border border-dashed border-[#3a2a2a] bg-[#1a1212] px-3 py-2 text-xs text-[#e05b5b]">
-                <AlertCircle size={14} className="shrink-0" />
-                <span>{toolCall.error || 'Blad generowania obrazu.'}</span>
-              </div>
-            ) : imageSrc ? (
-              imageFailed ? (
-                <div className="flex max-w-[280px] items-start gap-2 rounded-lg border border-[#3a2a2a] bg-[#1a1212] px-3 py-2 text-[11.5px] text-[#e05b5b]">
-                  <ImageOff size={14} className="mt-0.5 shrink-0" />
-                  <div className="min-w-0 flex-1">
-                    <div className="font-medium">Nie mozna wyswietlic obrazu</div>
-                    <a
-                      href={imageSrc}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="mt-1 inline-flex items-center gap-1 text-[11px] text-accent hover:underline"
-                    >
-                      Otworz w nowej karcie
-                      <ExternalLink size={10} />
-                    </a>
-                  </div>
-                </div>
-              ) : (
-                <img
-                  src={imageSrc}
-                  alt={toolCall.label}
-                  onError={() => {
-                    console.warn('[ChatBubble] obraz nie zaladowal sie')
-                    setImageFailed(true)
-                  }}
-                  className="max-h-[280px] max-w-[280px] cursor-zoom-in rounded-lg border border-edge object-cover transition-opacity hover:opacity-90"
-                  onClick={() => openLightbox(imageSrc)}
-                />
-              )
-            ) : (
-              <div className="flex items-center gap-2 rounded-xl border border-dashed border-[#252a3d] bg-surface px-3 py-2 text-xs text-[#8a94b8]">
-                <Loader2 size={14} className="shrink-0 animate-spin text-accent" />
-                <span>{toolCall.status === 'generating' ? 'Generowanie obrazu...' : toolCall.label}</span>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Attachments */}
+        {/* Attachments od usera */}
         {attachments.map((att, idx) => (
           <AttachmentImage
             key={idx}
@@ -195,9 +176,110 @@ export default function ChatBubble({ message, tokens }: ChatBubbleProps) {
 }
 
 /**
- * Zalacznik obrazu - rozwiazuje blobId (nowy) lub data (stary) na URL
- * przez useBlobSrc i renderuje miniaturke.
+ * Obrazek tool call renderowany wewnatrz dymka (gdy jest tez tekst).
+ * Bez wlasnego bordera i tla - dymek juz je ma.
  */
+function ImageInBubble({
+  toolCall,
+  imageSrc,
+  imageFailed,
+  onImageError,
+  onImageClick,
+}: {
+  toolCall: ToolCall
+  imageSrc: string | undefined
+  imageFailed: boolean
+  onImageError: () => void
+  onImageClick: (src: string) => void
+}) {
+  if (toolCall.status === 'error') {
+    return (
+      <div className="mt-2 flex items-center gap-2 rounded-lg border border-dashed border-[#3a2a2a] bg-[#1a1212] px-2.5 py-1.5 text-[11.5px] text-[#e05b5b]">
+        <AlertCircle size={12} className="shrink-0" />
+        <span>{toolCall.error || 'Blad generowania obrazu.'}</span>
+      </div>
+    )
+  }
+  if (!imageSrc || imageFailed) {
+    if (imageFailed) {
+      return (
+        <div className="mt-2 flex items-center gap-2 text-[11px] text-[#9a8a8a]">
+          <ImageOff size={12} className="shrink-0" />
+          <span>Nie mozna wyswietlic obrazu</span>
+        </div>
+      )
+    }
+    return (
+      <div className="mt-2 flex items-center gap-2 text-[11.5px] text-[#8a94b8]">
+        <Loader2 size={12} className="shrink-0 animate-spin text-accent" />
+        <span>Generowanie obrazu...</span>
+      </div>
+    )
+  }
+  return (
+    <img
+      src={imageSrc}
+      alt={toolCall.label}
+      onError={onImageError}
+      className="mt-2 block max-h-[320px] w-auto max-w-full cursor-zoom-in rounded-lg object-contain transition-opacity hover:opacity-90"
+      onClick={() => onImageClick(imageSrc)}
+    />
+  )
+}
+
+/**
+ * Sam obrazek (bez tekstu) - poza dymkiem, samodzielny element.
+ * Tak wygladaja obrazy wygenerowane rozdzka (user generuje sam).
+ */
+function ImageStandalone({
+  toolCall,
+  imageSrc,
+  imageFailed,
+  onImageError,
+  onImageClick,
+}: {
+  toolCall: ToolCall
+  imageSrc: string | undefined
+  imageFailed: boolean
+  onImageError: () => void
+  onImageClick: (src: string) => void
+}) {
+  if (toolCall.status === 'error') {
+    return (
+      <div className="flex max-w-[280px] items-start gap-2 rounded-lg border border-[#3a2a2a] bg-[#1a1212] px-3 py-2 text-[11.5px] text-[#e05b5b]">
+        <AlertCircle size={14} className="mt-0.5 shrink-0" />
+        <span>{toolCall.error || 'Blad generowania obrazu.'}</span>
+      </div>
+    )
+  }
+  if (!imageSrc || imageFailed) {
+    if (imageFailed) {
+      return (
+        <div className="flex max-w-[280px] items-start gap-2 rounded-lg border border-[#3a2a2a] bg-[#1a1212] px-3 py-2 text-[11.5px] text-[#e05b5b]">
+          <ImageOff size={14} className="mt-0.5 shrink-0" />
+          <span>Nie mozna wyswietlic obrazu</span>
+        </div>
+      )
+    }
+    return (
+      <div className="flex items-center gap-2 rounded-xl border border-dashed border-[#252a3d] bg-surface px-3 py-2 text-xs text-[#8a94b8]">
+        <Loader2 size={14} className="shrink-0 animate-spin text-accent" />
+        <span>Generowanie obrazu...</span>
+      </div>
+    )
+  }
+  return (
+    <img
+      src={imageSrc}
+      alt={toolCall.label}
+      onError={onImageError}
+      className="max-h-[280px] max-w-[280px] cursor-zoom-in rounded-lg border border-edge object-cover transition-opacity hover:opacity-90"
+      onClick={() => onImageClick(imageSrc)}
+    />
+  )
+}
+
+/** Zalacznik obrazu od usera. */
 function AttachmentImage({
   blobId,
   legacyData,

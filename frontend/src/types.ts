@@ -48,10 +48,6 @@ export interface CharacterBook {
 /**
  * Karta postaci.
  * Pola z `description` do `character_version` odwzorowuja spec SillyTavern V2/V3.
- *
- * Portret:
- *   - `portraitBlobId` (nowy format) - sha256 bloba na serwerze.
- *   - `portrait` (stary format) - base64 data URL inline. Deprecated.
  */
 export interface CharacterCard {
   id: string
@@ -71,7 +67,6 @@ export interface CharacterCard {
   extensions?: Record<string, unknown>
   characterBook?: CharacterBook
 
-  // UI-only
   role?: string
   status?: 'online' | 'away' | 'offline'
   summary?: string
@@ -81,17 +76,14 @@ export interface CharacterCard {
   /** Stary format: base64 data URL. Deprecated. */
   portrait?: string
 
-  /** Pelny oryginalny spec ST z importu. */
   rawSpec?: Record<string, unknown>
 
-  /** Server-assigned metadane do optimistic lockingu. */
   _serverCreatedAt?: number
   _serverUpdatedAt?: number
 }
 
 /**
  * Persona uzytkownika.
- *
  * Avatar: `avatarBlobId` (nowy) lub `avatar` (stary base64).
  */
 export interface Persona {
@@ -104,12 +96,10 @@ export interface Persona {
   /** Stary format: base64 data URL. Deprecated. */
   avatar?: string
 
-  /** Server-assigned metadane do optimistic lockingu. */
   _serverCreatedAt?: number
   _serverUpdatedAt?: number
 }
 
-/** Parametry samplera wysylane do LLM (OpenAI-compatible). */
 export interface SamplerParams {
   temperature?: number
   topP?: number
@@ -118,7 +108,6 @@ export interface SamplerParams {
   presencePenalty?: number
 }
 
-/** Konfiguracja jednego profilu API (zapisana, mozliwa do wyboru). */
 export interface ApiProfile {
   id: string
   name: string
@@ -134,10 +123,6 @@ export interface ApiProfile {
   visionModel?: string
 }
 
-/**
- * Pojedynczy bloczek stylu (TAVO-compatible).
- * `marker: true` oznacza placeholder podmieniany danymi.
- */
 export interface PromptBlock {
   identifier: string
   name: string
@@ -151,13 +136,11 @@ export interface PromptBlock {
   enabled: boolean
 }
 
-/** Kolejnosc blokow per postac ('' = globalna). */
 export interface PromptOrderEntry {
   characterId: string
   order: Array<{ identifier: string; enabled: boolean }>
 }
 
-/** Caly styl - jak JSON z TAVO. */
 export interface StyleConfig {
   impersonationPrompt?: string
   newChatPrompt?: string
@@ -172,12 +155,10 @@ export interface StyleConfig {
   promptOrder: PromptOrderEntry[]
 }
 
-/** Nazwany preset stylu. */
 export interface StylePreset {
   id: string
   name: string
   style: StyleConfig
-  /** Server-assigned metadane do optimistic lockingu. */
   _serverCreatedAt?: number
   _serverUpdatedAt?: number
 }
@@ -190,6 +171,8 @@ export type MessageRole = 'user' | 'assistant'
  * Obraz:
  *   - `imageBlobId` (nowy format) - sha256 bloba. Preferowany.
  *   - `imageUrl` (stary format) - base64 data URL. Deprecated.
+ *   - `prompt` - prompt wyslany do mostka. Zapisany zeby mozna bylo
+ *     zregenerowac obraz bez wywolywania LLM ponownie.
  */
 export interface ToolCall {
   type: 'image' | 'websearch'
@@ -198,6 +181,8 @@ export interface ToolCall {
   imageBlobId?: string
   /** Stary format: base64 data URL. Deprecated. */
   imageUrl?: string
+  /** Prompt do mostka obrazow (dla regeneracji). */
+  prompt?: string
   /** Wyniki wyszukiwania (dla type: 'websearch'). */
   results?: WebSearchResult[]
   /** Stan generowania obrazu (dla type: 'image'). */
@@ -219,14 +204,11 @@ export interface WebSearchResult {
  */
 export interface MessageAttachment {
   type: 'image'
-  /** Nowy format: sha256 bloba. */
   blobId?: string
-  /** Stary format: base64 data URL. Deprecated. */
   data?: string
   name?: string
 }
 
-/** Reprezentacja tool call z API */
 export interface APIToolCall {
   id: string
   type: 'function'
@@ -236,7 +218,6 @@ export interface APIToolCall {
   }
 }
 
-/** Jeden wariant tresci wiadomosci (swipe). */
 export interface MessageVariant {
   content: string
   toolCall?: ToolCall
@@ -244,10 +225,6 @@ export interface MessageVariant {
   attachments?: MessageAttachment[]
 }
 
-/**
- * Wiadomosc w konwersacji.
- * Wiadomosci asystenta moga miec wiele wariantow (regeneracje).
- */
 export interface ChatMessage {
   id: string
   role: MessageRole
@@ -256,12 +233,10 @@ export interface ChatMessage {
   timestamp: number
 }
 
-/** Pojedynczy wpis pamieci dlugotrwalej. */
 export interface LongTermMemoryEntry {
   id: string
   content: string
   timestamp: number
-  /** Indeks ostatniej wiadomosci, ktora zostala uwzgledniona w tym wpisie. */
   messageIndex: number
 }
 
@@ -275,7 +250,6 @@ export interface Conversation {
   lorebookIds?: string[]
   longTermMemory: LongTermMemoryEntry[]
   lastSummarizedIndex: number
-  /** Server-assigned metadane do optimistic lockingu. */
   _serverCreatedAt?: number
   _serverUpdatedAt?: number
 }

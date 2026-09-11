@@ -391,8 +391,6 @@ export default function App() {
         const parts: any[] = []
         if (content) parts.push({ type: 'text', text: content })
         for (const att of attachments) {
-          // Nowy format: blobId (trzeba pobrac z serwera jako base64).
-          // Stary format: data URL inline.
           const dataUrl = att.data ?? (att.blobId ? await getBlobAsDataUrl(att.blobId) : undefined)
           if (dataUrl) parts.push({ type: 'image_url', image_url: { url: dataUrl } })
         }
@@ -809,12 +807,115 @@ export default function App() {
     await runCompletion(updated.messages, userMessage.id, 'append')
   }
 
+  /**
+   * Recznie ustawia toolCall w wiadomosci (uzywane przy regeneracji obrazka).
+   */
+  const setMessageToolCall = (messageId: string, toolCall: ToolCall | undefined) => {
+    setConversations((prev) =>
+      prev.map((c) => {
+        if (c.id !== activeId) return c
+        const messages = c.messages.map((m) => {
+          if (m.id !== messageId) return m
+          const variant = m.variants[m.selectedVariant] ?? m.variants[0]
+          const variants = [...m.variants]
+          variants[m.selectedVariant] = { ...variant, toolCall }
+          return { ...m, variants }
+        })
+        const updated: Conversation = { ...c, messages }
+        persistConversation(updated)
+        return updated
+      }),
+    )
+  }
+
+  /**
+   * Regeneracja samego obrazka - wysyla ten sam prompt do mostka ponownie,
+   * BEZ wywolywania LLM. Uzywane gdy user kliknie Regeneruj na wiadomosci
+   * ktora jest samym obrazkiem (np. z rozdzki).
+   */
+  const regenerateImage = async (messageId: string, prompt: string) => {
+    const baseUrl = settings.imageGenBaseUrl
+    const responseFormat = settings.imageGenResponseFormat
+    if (!baseUrl) {
+      setMessageToolCall(messageId, {
+        type: 'image',
+        label: 'Generowanie obrazu',
+        status: 'error',
+        error: 'Nie ustawiono adresu backendu generowania obrazow.',
+        prompt,
+      })
+      return
+    }
+
+    // Ustaw status generating (bez zmiany promptu).
+    setMessageToolCall(messageId, {
+      type: 'image',
+      label: 'Generowanie obrazu',
+      status: 'generating',
+      prompt,
+    })
+
+    try {
+      const result = await generateImage(prompt, { baseUrl, responseFormat })
+
+      if (result.status === 'done') {
+        const blobId = await uploadBlobFromBlob(result.blob, 'regenerated.png')
+        setMessageToolCall(messageId, {
+          type: 'image',
+          label: 'Wygenerowany obraz',
+          imageBlobId: blobId,
+          status: 'done',
+          prompt,
+        })
+      } else if (result.status === 'processing') {
+        setMessageToolCall(messageId, {
+          type: 'image',
+          label: 'Generowanie obrazu',
+          status: 'generating',
+          error: 'Generowanie trwa dluzej niz 45s.',
+          prompt,
+        })
+      } else {
+        setMessageToolCall(messageId, {
+          type: 'image',
+          label: 'Generowanie obrazu',
+          status: 'error',
+          error: result.message,
+          prompt,
+        })
+      }
+    } catch (error) {
+      setMessageToolCall(messageId, {
+        type: 'image',
+        label: 'Generowanie obrazu',
+        status: 'error',
+        error: error instanceof Error ? error.message : String(error),
+        prompt,
+      })
+    }
+  }
+
   const handleRegenerate = async (messageId: string) => {
     if (!activeConversation) return
     const index = activeConversation.messages.findIndex((m) => m.id === messageId)
     if (index === -1) return
 
     const target = activeConversation.messages[index]
+    const variant = target.variants[target.selectedVariant] ?? target.variants[0]
+    const toolCall = variant?.toolCall
+
+    // Sam obrazek z zapisanym promptem (np. rozdzka) - regeneruj bez LLM.
+    if (
+      target.role === 'assistant' &&
+      toolCall?.type === 'image' &&
+      toolCall.prompt &&
+      !variant.content.trim()
+    ) {
+      await regenerateImage(messageId, toolCall.prompt)
+      return
+    }
+
+    // Standardowa sciezka: regeneracja LLM.
     if (target.role === 'assistant') {
       await runCompletion(activeConversation.messages.slice(0, index), messageId, 'replace')
     } else {
@@ -1141,9 +1242,8 @@ export default function App() {
   }
 
   /**
-   * Generowanie obrazu z przycisku (frontend, bez tool-calla).
-   * Po generacji obraz jest uploadowany na /blobs jako blob (sha256),
-   * w wariancie zapisujemy tylko imageBlobId.
+   * Generowanie obrazu z przycisku (rozdzka).
+   * Zapisuje prompt w toolCall, zeby Regeneruj moglo odtworzyc ten sam obraz.
    */
   const handleGenerateImage = async () => {
     if (!activeConversation || !activeCharacter) return
@@ -1192,13 +1292,13 @@ export default function App() {
       let finalToolCall: ToolCall
 
       if (result.status === 'done') {
-        // Upload do /blobs - trwale, zamiast base64 w wariancie.
         const blobId = await uploadBlobFromBlob(result.blob, 'generated.png')
         finalToolCall = {
           type: 'image',
           label: 'Wygenerowany obraz',
           imageBlobId: blobId,
           status: 'done',
+          prompt,
         }
       } else if (result.status === 'processing') {
         finalToolCall = {
@@ -1206,6 +1306,7 @@ export default function App() {
           label: 'Generowanie obrazu',
           status: 'generating',
           error: 'Generowanie trwa dluzej niz 45s.',
+          prompt,
         }
       } else {
         finalToolCall = {
@@ -1213,6 +1314,7 @@ export default function App() {
           label: 'Generowanie obrazu',
           status: 'error',
           error: result.message,
+          prompt,
         }
       }
 
@@ -1417,4 +1519,4 @@ export default function App() {
   )
 }
 
-// === END OF FILE
+// === END OF FILE ===
