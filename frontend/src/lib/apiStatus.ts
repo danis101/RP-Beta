@@ -5,15 +5,17 @@ import { OpenAIAdapter } from '../services/api'
 /**
  * Globalny status aktywności API + załadowania modelu.
  *
- * Trzy stany (zgodnie z ustaleniem):
- *  - 'ok'        — API odpowiada i model jest gotowy (LM Studio: state=loaded;
- *                  generyczny backend: wystarczy że API odpowiedziało + model ustawiony)
- *  - 'no-model'  — API odpowiada, ale model nie wybrany / nie znaleziony / niezaładowany
+ * Trzy stany:
+ *  - 'ok'        — API odpowiada i model jest gotowy
+ *  - 'no-model'  — API odpowiada, ale model nie wybrany / nie znaleziony
  *  - 'offline'   — API nie odpowiada (błąd sieci / HTTP / timeout)
  *  - 'unknown'   — stan początkowy, sprawdzanie w toku
  *
- * Sprawdzanie tylko aktywnego profilu, poll co 60 s (konfigurowalny).
- * Stan trzymamy w module-level store + useSyncExternalStore,
+ * Timeout: każdy check ma własny AbortController z limitem 8s. Bez tego
+ * wolny/no-responding endpoint blokuje kolejny tick pollingu i nagromadzają
+ * się wiszące requesty (Bun/undici domyślnie czeka ~135s).
+ *
+ * Poll co 60s. Stan w module-level store + useSyncExternalStore,
  * żeby nie ciągnąć go przez Context i nie re-renderować całego drzewa.
  */
 
@@ -27,6 +29,9 @@ export interface ApiStatusSnapshot {
   lastCheck: number
   error?: string
 }
+
+/** Timeout jednego sprawdzenia (ms). Krótszy niż poll interval, żeby nie było kolejki. */
+const CHECK_TIMEOUT_MS = 8_000
 
 let snapshot: ApiStatusSnapshot = {
   status: 'unknown',
@@ -59,16 +64,24 @@ export function useApiStatus(): ApiStatusSnapshot {
 }
 
 /**
- * Sprawdza aktywny profil:
- *  - LM Studio (jeśli /api/v0/models odpowie): realny stan załadowania modelu,
- *  - generyczny OpenAI-compat: samo „API żyje”.
+ * Sprawdza aktywny profil. Timeout 8s na cały check (oba endpointy razem).
  */
 export async function checkApiStatus(profile: ApiProfile | undefined): Promise<void> {
   if (currentAbort) currentAbort.abort()
   const abort = new AbortController()
   currentAbort = abort
 
+  // Twardy timeout — nawet jeśli fetch sam nie dostanie aborcji, my się poddamy.
+  const timeoutId = setTimeout(() => {
+    if (!abort.signal.aborted) abort.abort()
+  }, CHECK_TIMEOUT_MS)
+
+  const cleanup = () => {
+    clearTimeout(timeoutId)
+  }
+
   if (!profile || !profile.baseUrl.trim()) {
+    cleanup()
     emit({ status: 'offline', backend: undefined, modelId: undefined, error: 'Brak Base URL' })
     return
   }
@@ -83,11 +96,15 @@ export async function checkApiStatus(profile: ApiProfile | undefined): Promise<v
 
   try {
     const result = await adapter.listModels(abort.signal)
-    if (abort.signal.aborted) return
+    if (abort.signal.aborted) {
+      cleanup()
+      return
+    }
 
     const backend = result.backend ?? 'generic'
 
     if (!selectedModel) {
+      cleanup()
       emit({ status: 'no-model', backend, modelId: undefined, error: undefined })
       return
     }
@@ -95,17 +112,30 @@ export async function checkApiStatus(profile: ApiProfile | undefined): Promise<v
     if (backend === 'lmstudio') {
       const found = result.models.find((m) => m.id === selectedModel)
       if (found?.status === 'loaded') {
+        cleanup()
         emit({ status: 'ok', backend, modelId: selectedModel, error: undefined })
       } else {
+        cleanup()
         emit({ status: 'no-model', backend, modelId: selectedModel, error: undefined })
       }
       return
     }
 
     // Generyczny backend – skoro odpowiedział i model jest ustawiony, uznajemy go za gotowy.
+    cleanup()
     emit({ status: 'ok', backend, modelId: selectedModel, error: undefined })
   } catch (err) {
-    if (abort.signal.aborted) return
+    cleanup()
+    if (abort.signal.aborted) {
+      // Timeout albo przerwane przez kolejny check — raportujemy jako offline.
+      emit({
+        status: 'offline',
+        backend: undefined,
+        modelId: undefined,
+        error: `Timeout po ${CHECK_TIMEOUT_MS} ms`,
+      })
+      return
+    }
     emit({
       status: 'offline',
       backend: undefined,
@@ -117,8 +147,7 @@ export async function checkApiStatus(profile: ApiProfile | undefined): Promise<v
 
 /**
  * Uruchamia pętlę sprawdzania statusu co `intervalMs` ms.
- * Pierwsze sprawdzenie następuje natychmiast (przed pierwszym interwałem).
- * Zwraca funkcję zatrzymującą.
+ * Pierwsze sprawdzenie następuje natychmiast.
  */
 export function startApiStatusPolling(
   getProfile: () => ApiProfile | undefined,
@@ -146,3 +175,4 @@ export function stopApiStatusPolling(): void {
     currentAbort = null
   }
 }
+

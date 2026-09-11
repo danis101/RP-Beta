@@ -23,16 +23,25 @@ export const GC_INTERVAL_MS = 24 * 60 * 60 * 1000
 
 /**
  * Okres ochronny dla świeżo wgranych blobów (domyślnie 1h).
- *
- * Scenariusz: user wybiera plik w InputBar lub CardEditor → upload leci na
- * /blobs → dopiero po zapisaniu wiadomości/karty powstaje referencja. Jeśli
- * w tym okienku (upload ≠ referencja) odpali się GC, blob zostałby skasowany
- * jako sierota i referencja po zapisie wskazywałaby nieistniejący plik.
- *
- * GC ignoruje bloby młodsze niż ten próg — nawet jeśli nie mają jeszcze
- * referencji. Nadpisanie przez env: GC_MIN_BLOB_AGE_MS.
+ * Chroni uploady czekające na zapis karty/wiadomości przed GC.
+ * Nadpisanie przez env: GC_MIN_BLOB_AGE_MS.
  */
 export const MIN_BLOB_AGE_MS = Number(process.env.GC_MIN_BLOB_AGE_MS) || 60 * 60 * 1000
+
+/**
+ * Timeout połączeń proxy (ms). Domyślnie 15s.
+ *
+ * Bun/undici domyślnie czeka ~135s zanim odda błąd połączenia TCP. Przy
+ * pollingu statusu API (co 60s) prowadzi to do nagromadzenia wiszących
+ * requestów, gdy usługa docelowa nie odpowiada.
+ *
+ * 15s to górna granica sensu dla localhost/LAN — jeśli LM Studio, mostek
+ * albo SearXNG nie odpowiedzą w tym czasie, to i tak nie odpowiedzą
+ * (chyba że ładują model po idle — wtedy warto podnieść).
+ *
+ * Nadpisanie: PROXY_TIMEOUT_MS w .env.
+ */
+export const PROXY_TIMEOUT_MS = Number(process.env.PROXY_TIMEOUT_MS) || 15_000
 
 /** Rate limit logowania: 5 prób / minutę / IP. */
 export const LOGIN_RATE_LIMIT = 5
@@ -46,12 +55,7 @@ export const LOGIN_RATE_WINDOW_MS = 60 * 1000
  *
  * Zachowanie:
  *   - puste   -> dozwolone TYLKO adresy prywatne (LAN, loopback, link-local).
- *                Publiczne IP i domeny są blokowane (anty-SSRF).
- *   - niepuste -> dozwolone WYŁĄCZNIE hosty z listy (można wpisać publiczne).
- *
- * Uwaga: "host" to hostname albo IP z opcjonalnym portem. Dopasowanie
- * jest dokładne (bez wildcardów) — świadomie, żeby uniknąć przypadkowego
- * otwarcia na cały zakres.
+ *   - niepuste -> dozwolone WYŁĄCZNIE hosty z listy.
  */
 export const PROXY_ALLOWED_HOSTS: string[] = (process.env.PROXY_ALLOWED_HOSTS || '')
   .split(',')
@@ -76,4 +80,6 @@ if (PROXY_ALLOWED_HOSTS.length === 0) {
       'Publiczne hosty zablokowane. Rozszerz przez PROXY_ALLOWED_HOSTS w .env.',
   )
 }
+
+console.log(`[config] PROXY_TIMEOUT_MS=${PROXY_TIMEOUT_MS} ms`)
 

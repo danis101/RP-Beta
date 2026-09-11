@@ -11,31 +11,25 @@
  *   żądanie do docelowego serwera, którego adres podany jest w nagłówku
  *   `X-LLM-Target` / `X-SearXNG-Target` / `X-Image-Target`.
  *
- *   Ten sam mechanizm działał w dev (Vite proxy plugin). Tu jest jego
- *   produkcyjny odpowiednik — Hono/Bun. Frontend nie musi wiedzieć, na
- *   jakim środowisku działa — zawsze woła względne ścieżki.
- *
  * Bezpieczeństwo (trzy warstwy):
+ *   1. AUTH — endpointy proxy są pod `proxyAuthMiddleware`.
+ *   2. ALLOWLISTA — host docelowy musi być prywatny (LAN) albo jawnie
+ *      dopuszczony przez PROXY_ALLOWED_HOSTS.
+ *   3. REDIRECTY — `redirect: 'manual'`, jeden hop z rewalidacją allowlisty.
  *
- *   1. AUTH — endpointy proxy są pod `proxyAuthMiddleware`. Wymagają
- *      zalogowanego usera RP. JWT idzie w `X-RP-Auth` (nie `Authorization`,
- *      bo ten jest zarezerwowany na klucz API usługi docelowej).
+ * Timeouty (dodane w Batch 2.7):
+ *   Domyślnie Bun/undici czeka ~135s zanim odda błąd połączenia. Jeśli
+ *   usługa docelowa nie odpowiada, requesty wiszą, a polling statusu API
+ *   (co 60s) nagromadzi zombie. Ustawiamy krótszy timeout (15s) — jeśli
+ *   LM Studio/mostek/SearXNG nie odpowie w 15s, to i tak nie odpowie.
  *
- *   2. ALLOWLISTA CELÓW — host docelowy musi być na liście `PROXY_ALLOWED_HOSTS`
- *      (jeśli ustawiona) albo być adresem prywatnym (LAN/loopback/link-local,
- *      gdy lista pusta). Publiczne hosty są domyślnie zablokowane — chroni to
- *      przed użyciem serwera jako otwartego SSRF relay do internetu.
- *
- *   3. REDIRECTY — `redirect: 'manual'`. Nie idziemy w ciemno za Location,
- *      bo allowlista targetu nic nie mówi o tym, gdzie redirect prowadzi.
- *
- * Nagłówki kontrolne proxy (`X-LLM-Target`, `X-SearXNG-Target`, `X-Image-Target`,
- * `X-RP-Auth`) są usuwane z forwardowanego żądania i nie trafiają do celu.
+ *   Można nadpisać przez env PROXY_TIMEOUT_MS (np. dla wolnych modeli
+ *   ładujących się długo po idle).
  */
 
 import type { Context } from 'hono'
 import type { AppEnv } from './auth'
-import { PROXY_ALLOWED_HOSTS } from './config'
+import { PROXY_ALLOWED_HOSTS, PROXY_TIMEOUT_MS } from './config'
 
 /** Nagłówki, których NIE przekazujemy do backendu docelowego (hop-by-hop). */
 const SKIP_REQ_HEADERS = new Set([
@@ -70,17 +64,7 @@ const PROXY_CONTROL_HEADERS = new Set([
 ])
 
 /**
- * Regex na prywatne / lokalne adresy. Domyślna allowlista, gdy
- * PROXY_ALLOWED_HOSTS nie jest ustawione.
- *
- * Pokrywa:
- *   - hostname "localhost" i dowolny *.localhost
- *   - IPv4 prywatne: 10/8, 172.16/12, 192.168/16
- *   - IPv4 loopback: 127/8
- *   - IPv4 link-local: 169.254/16
- *   - IPv6 loopback ::1, link-local fe80::/10, unique local fc00::/7
- *   - hostname .local (mDNS, typowy dla LAN)
- *   - hostname .lan / .home / .internal (typowo lokalne)
+ * Regex na prywatne / lokalne adresy. Domyślna allowlista.
  */
 const PRIVATE_HOST_RE = new RegExp(
   '^(' +
@@ -99,14 +83,6 @@ const PRIVATE_HOST_RE = new RegExp(
   'i',
 )
 
-/**
- * Sprawdza, czy target jest dozwolony.
- *
- * Reguła:
- *   - jeśli PROXY_ALLOWED_HOSTS ustawione: target.host (z portem) LUB target.hostname
- *     musi być dokładnie na liście (lowercase). Publiczne wpisy wtedy działają.
- *   - jeśli puste: host musi pasować do PRIVATE_HOST_RE (tylko LAN/loopback).
- */
 function isAllowedTarget(url: URL): boolean {
   const hostWithPort = url.host.toLowerCase()
   const hostOnly = url.hostname.toLowerCase()
@@ -123,9 +99,6 @@ function isAllowedTarget(url: URL): boolean {
 
 /**
  * Buduje handler proxy dla danego prefiksu i nagłówka docelowego.
- *
- * @param prefix       prefiks ścieżki, np. '/llm-proxy'
- * @param targetHeader nazwa nagłówka z adresem docelowym, np. 'x-llm-target'
  */
 export function makeProxyHandler(prefix: string, targetHeader: string) {
   return async (c: Context<AppEnv>): Promise<Response> => {
@@ -136,7 +109,6 @@ export function makeProxyHandler(prefix: string, targetHeader: string) {
       return c.json({ error: `Brak nagłówka ${targetHeader} (adres backendu docelowego)` }, 400)
     }
 
-    // Walidacja URL docelowego.
     let parsed: URL
     try {
       parsed = new URL(targetBase)
@@ -148,7 +120,6 @@ export function makeProxyHandler(prefix: string, targetHeader: string) {
       return c.json({ error: `Nieobsługiwany protokół: ${parsed.protocol}` }, 400)
     }
 
-    // --- Allowlista ---
     if (!isAllowedTarget(parsed)) {
       console.warn(
         `[proxy] blocked target ${parsed.host} (not in PROXY_ALLOWED_HOSTS, ` +
@@ -166,14 +137,11 @@ export function makeProxyHandler(prefix: string, targetHeader: string) {
       )
     }
 
-    // Ścieżka po prefiksie + query string.
     const reqPath = c.req.path
     const suffix = reqPath.startsWith(prefix) ? reqPath.slice(prefix.length) : reqPath
     const search = new URL(c.req.url).search
     const targetUrl = targetBase + suffix + search
 
-    // Nagłówki przekazywane do celu — kopiujemy wszystko oprócz hop-by-hop
-    // i naszych własnych nagłówków sterujących proxy (w tym JWT sync!).
     const forwardHeaders = new Headers()
     for (const [key, value] of c.req.raw.headers) {
       const lower = key.toLowerCase()
@@ -182,16 +150,17 @@ export function makeProxyHandler(prefix: string, targetHeader: string) {
       forwardHeaders.set(key, value)
     }
 
+    // Timeout 15s (konfigurowalny) — bez tego Bun czeka ~135s zanim odda błąd,
+    // a polling statusu API nagromadzi zombie requestów.
+    const timeoutSignal = AbortSignal.timeout(PROXY_TIMEOUT_MS)
+
     const fetchInit: RequestInit = {
       method: c.req.method,
       headers: forwardHeaders,
-      // NIE podążamy automatycznie za redirectami — allowlista dotyczyła
-      // tylko pierwotnego targetu, a Location może wskazywać gdziekolwiek.
       redirect: 'manual',
+      signal: timeoutSignal,
     }
 
-    // Body dla POST/PUT/PATCH — czytamy jako ArrayBuffer (JSON, nie stream).
-    // Chat completions i generacja obrazów używają fixed-length JSON body.
     if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
       const bodyBytes = await c.req.arrayBuffer()
       if (bodyBytes.byteLength > 0) {
@@ -203,7 +172,15 @@ export function makeProxyHandler(prefix: string, targetHeader: string) {
     try {
       upstream = await fetch(targetUrl, fetchInit)
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
+      // Rozróżniamy timeout od innych błędów połączenia.
+      const isTimeout =
+        err instanceof DOMException && (err.name === 'TimeoutError' || err.name === 'AbortError')
+      const msg = isTimeout
+        ? `Timeout po ${PROXY_TIMEOUT_MS} ms (usługa nie odpowiada)`
+        : err instanceof Error
+          ? err.message
+          : String(err)
+
       console.error(
         `[proxy] ${c.req.method} ${prefix}${suffix} -> ${targetUrl} FAILED: ${msg}`,
       )
@@ -211,15 +188,12 @@ export function makeProxyHandler(prefix: string, targetHeader: string) {
         {
           error: `Nie można połączyć się z ${targetBase}: ${msg}`,
           target: targetUrl,
+          timeout: isTimeout,
         },
         502,
       )
     }
 
-    // Redirect — nie idziemy za nim automatycznie. Sprawdzamy Location
-    // i jeśli też jest dozwolony, robimy JEDEN hop ręcznie. Dalsze redirecty
-    // zwracamy do klienta jako błąd — świadomie, żeby nie zbudować otwartego
-    // łańcucha redirectów poza allowlistą.
     if (upstream.status >= 300 && upstream.status < 400) {
       const location = upstream.headers.get('location')
       if (!location) {
@@ -251,7 +225,6 @@ export function makeProxyHandler(prefix: string, targetHeader: string) {
 
       try {
         const upstream2 = await fetch(redirectUrl.toString(), fetchInit)
-        // Dalsze redirecty — zwracamy do klienta, nie goniąc dalej.
         if (upstream2.status >= 300 && upstream2.status < 400) {
           return c.json(
             {
@@ -265,7 +238,13 @@ export function makeProxyHandler(prefix: string, targetHeader: string) {
         }
         upstream = upstream2
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
+        const isTimeout =
+          err instanceof DOMException && (err.name === 'TimeoutError' || err.name === 'AbortError')
+        const msg = isTimeout
+          ? `Timeout po ${PROXY_TIMEOUT_MS} ms (redirect nie odpowiada)`
+          : err instanceof Error
+            ? err.message
+            : String(err)
         return c.json(
           { error: `Redirect nie udał się: ${msg}`, target: redirectUrl.toString() },
           502,
@@ -273,7 +252,6 @@ export function makeProxyHandler(prefix: string, targetHeader: string) {
       }
     }
 
-    // Nagłówki odpowiedzi — filtrujemy hop-by-hop i content-encoding/length.
     const respHeaders = new Headers()
     for (const [key, value] of upstream.headers) {
       const lower = key.toLowerCase()
@@ -281,8 +259,6 @@ export function makeProxyHandler(prefix: string, targetHeader: string) {
       respHeaders.set(key, value)
     }
 
-    // Streaming body → streaming response. SSE z LLM przechodzi bez buforowania,
-    // obrazy z mostka też lecą strumieniem.
     return new Response(upstream.body, {
       status: upstream.status,
       statusText: upstream.statusText,
