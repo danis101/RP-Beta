@@ -6,6 +6,9 @@
  *   PATCH  /admin/users/:id/password   — zmień hasło innego usera (unieważnia jego sesje)
  *
  * Admin nie może usunąć samego siebie (żeby nie zostawić serwera bez admina).
+ *
+ * Po zmianie hasła / usunięciu konta wysyłamy `session.revoked` przez WS —
+ * target user wylogowuje się natychmiast, bez czekania na następny request HTTP.
  */
 
 import { Hono } from 'hono'
@@ -22,7 +25,7 @@ import {
   type AppEnv,
 } from '../auth'
 import { seedUserContent } from '../seed'
-import { closeAllForUser } from '../ws'
+import { revokeUserSessions } from '../ws'
 
 interface UserRow {
   id: string
@@ -112,9 +115,9 @@ adminRoutes.delete('/users/:id', async (c) => {
   db.run('DELETE FROM blobs WHERE user_id = ?', [targetId])
   db.run('DELETE FROM users WHERE id = ?', [targetId])
 
-  // Zamknij wszystkie aktywne połączenia WS tego usera — bez tego
-  // dostawałby eventy aż do zamknięcia po swojej stronie.
-  closeAllForUser(targetId)
+  // Powiadom aktywne sesje tego usera — natychmiastowy logout po stronie klienta.
+  // revokeUserSessions wysyła `session.revoked` i po chwili zamyka WS.
+  revokeUserSessions(targetId, 'account deleted')
 
   // Katalog blobów tego usera — usuń rekurencyjnie (best effort).
   try {
@@ -128,7 +131,8 @@ adminRoutes.delete('/users/:id', async (c) => {
 
 /**
  * Zmiana hasła innego usera przez admina.
- * Bumpuje session_version — wszystkie istniejące sesje tego usera padają.
+ * Bumpuje session_version i powiadamia aktywne sesje tego usera —
+ * natychmiastowy logout (bez czekania na następny request).
  */
 adminRoutes.patch('/users/:id/password', async (c) => {
   const targetId = c.req.param('id')
@@ -149,6 +153,12 @@ adminRoutes.patch('/users/:id/password', async (c) => {
   const hash = await hashPassword(newPassword)
   db.run('UPDATE users SET password_hash = ? WHERE id = ?', [hash, targetId])
   bumpUserSessionVersion(targetId)
+
+  // Powiadom aktywne sesje targetu — natychmiastowy logout.
+  // Uwaga: jeśli admin zmienia WŁASNE hasło (targetId === selfId), ta
+  // ścieżka i tak go nie dotyczy, bo admin nie może PATCHować sam siebie
+  // przez ten endpoint (używa /auth/change-password, które zwraca nowy token).
+  revokeUserSessions(targetId, 'password changed by admin')
 
   return c.json({ ok: true })
 })

@@ -2,7 +2,12 @@
  * Klient WebSocket do serwera RP Sync.
  *
  * Serwer broadcastuje eventy do wszystkich sesji danego usera:
- *   { type: 'entity.changed', entityType, action, id }
+ *   { type: 'entity.changed', entityType, action, id }   — zmiany encji
+ *   { type: 'session.revoked', reason? }                  — unieważnienie sesji
+ *
+ * `session.revoked` oznacza że token jest nieważny (admin reset hasła / usunął
+ * konto). Klient natychmiast wylogowuje usera (fireUnauthorized w client.ts)
+ * i PRZESTAJE się reconnectingować — sesja skończona.
  *
  * Reconnect z exponential backoff (1s, 2s, 4s, 8s, 16s, 30s max).
  *
@@ -11,7 +16,7 @@
  */
 
 import { wsUrl } from './config'
-import { getToken } from './client'
+import { getToken, notifySessionRevoked } from './client'
 
 export type EntityType = 'character' | 'persona' | 'conversation' | 'style' | 'lorebook' | 'settings'
 export type EntityAction = 'created' | 'updated' | 'deleted'
@@ -21,6 +26,11 @@ export interface SyncEvent {
   entityType: EntityType
   action: EntityAction
   id: string
+}
+
+interface SessionRevokedMessage {
+  type: 'session.revoked'
+  reason?: string
 }
 
 // --- Self-save tracking ---
@@ -63,6 +73,11 @@ function isSyncEvent(data: unknown): data is SyncEvent {
     typeof obj.action === 'string' &&
     typeof obj.id === 'string'
   )
+}
+
+function isSessionRevoked(data: unknown): data is SessionRevokedMessage {
+  if (!data || typeof data !== 'object') return false
+  return (data as Record<string, unknown>).type === 'session.revoked'
 }
 
 export function connectSyncWs(onEvent: (event: SyncEvent) => void): () => void {
@@ -110,6 +125,18 @@ export function connectSyncWs(onEvent: (event: SyncEvent) => void): () => void {
         return
       }
 
+      // Serwer unieważnił sesję (admin reset hasła / usunięcie konta).
+      // Natychmiastowy logout — bez czekania na następny request HTTP.
+      if (isSessionRevoked(parsed)) {
+        closed = true
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer)
+          reconnectTimer = null
+        }
+        notifySessionRevoked()
+        return
+      }
+
       if (isSyncEvent(parsed)) {
         try {
           onEvent(parsed)
@@ -148,3 +175,4 @@ export function connectSyncWs(onEvent: (event: SyncEvent) => void): () => void {
     }
   }
 }
+

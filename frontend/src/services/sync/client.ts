@@ -42,9 +42,6 @@ export function setToken(token: string | null): void {
 /**
  * Rzucany gdy serwer zwroci 409. `current` zawiera aktualna wersje encji
  * z serwera (albo null jesli zostala usunieta w miedzyczasie).
- *
- * Generyczny typ T pozwala warstwie wyzej (App.tsx) dostac typowana encje
- * bez rzutowania: `catch (e) { if (e instanceof ConflictError) e.current }`
  */
 export class ConflictError<T = unknown> extends Error {
   constructor(public current: T | null) {
@@ -53,7 +50,7 @@ export class ConflictError<T = unknown> extends Error {
   }
 }
 
-// --- Globalny handler 401 ---
+// --- Globalny handler 401 / uniewaznienia sesji ---
 
 type UnauthorizedHandler = () => void
 const unauthorizedHandlers = new Set<UnauthorizedHandler>()
@@ -74,6 +71,15 @@ function fireUnauthorized(): void {
       // ignorujemy bledy subskrybentow
     }
   }
+}
+
+/**
+ * Wywolywane gdy serwer jawnie uniewazni sesje (WS event `session.revoked`,
+ * np. admin resetuje haslo albo usuwa konto). Efekt identyczny z 401:
+ * czysci token i powiadamia AuthContext → natychmiastowy logout.
+ */
+export function notifySessionRevoked(): void {
+  fireUnauthorized()
 }
 
 // --- Rdzen ---
@@ -113,9 +119,6 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
   }
 
   if (resp.status === 409) {
-    // Backend zwrocil konflikt - parsujemy payload i rzucamy ConflictError
-    // z aktualna wersja encji w `current`. Typ T na tym poziomie jest
-    // "unknown" - warstwa wyzej (entities.ts) rzutuje to na konkretny typ.
     const payload = (await resp.json().catch(() => ({}))) as { current?: unknown }
     throw new ConflictError(payload.current ?? null)
   }
