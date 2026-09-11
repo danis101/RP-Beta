@@ -1,20 +1,25 @@
+// Polyfill MUSI byc zaimportowany jako pierwszy - zanim jakikolwiek inny
+// modul zdazy wywolac crypto.randomUUID() na etapie ladowania.
+import './lib/cryptoPolyfill'
+
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
 import { I18nProvider, useI18n } from './i18n'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import { SettingsProvider } from './context/SettingsContext'
+import { ConflictProvider } from './context/ConflictContext'
 import LoginScreen from './components/auth/LoginScreen'
 import './index.css'
 
 /**
  * Router sesji:
- *  - loading  → ekran "łączenie z serwerem" (weryfikacja tokenu z localStorage)
- *  - brak user → LoginScreen
- *  - zalogowany → SettingsProvider + App
+ *  - loading  -> ekran "laczenie z serwerem" (weryfikacja tokenu z localStorage)
+ *  - brak user -> LoginScreen
+ *  - zalogowany -> ConflictProvider + SettingsProvider + App
  *
- * SettingsProvider (na razie czyta z localStorage) opakowuje tylko App,
- * żeby ekran logowania nie uruchamiał niepotrzebnej logiki ustawień.
+ * ConflictProvider opakowuje tylko App (po loginie), bo tylko tam
+ * moga wystapic konflikty sync.
  */
 function Root() {
   const { t } = useI18n()
@@ -33,9 +38,11 @@ function Root() {
   }
 
   return (
-    <SettingsProvider>
-      <App />
-    </SettingsProvider>
+    <ConflictProvider>
+      <SettingsProvider>
+        <App />
+      </SettingsProvider>
+    </ConflictProvider>
   )
 }
 

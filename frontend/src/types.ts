@@ -1,4 +1,4 @@
-/** Wpis lorebooka/world info — zgodny ze ST i TAVO. */
+/** Wpis lorebooka/world info - zgodny ze ST i TAVO. */
 export interface LorebookEntry {
   id: string
   name?: string
@@ -19,12 +19,12 @@ export interface LorebookEntry {
   sticky?: number
   cooldown?: number
   delay?: number
-  /** Pełny oryginalny wpis z importu — zachowujemy nieznane pola. */
+  /** Pelny oryginalny wpis z importu - zachowujemy nieznane pola. */
   raw?: Record<string, unknown>
   [key: string]: unknown
 }
 
-/** Cały lorebook — kolekcja wpisów. */
+/** Caly lorebook - kolekcja wpisow. */
 export interface Lorebook {
   id: string
   name: string
@@ -33,6 +33,9 @@ export interface Lorebook {
   tokenBudget?: number
   recursiveScanning?: boolean
   entries: LorebookEntry[]
+  /** Server-assigned metadane do optimistic lockingu. */
+  _serverCreatedAt?: number
+  _serverUpdatedAt?: number
 }
 
 /** Wpis lorebooka w formacie SillyTavern (character_book entries). */
@@ -44,7 +47,7 @@ export interface CharacterBook {
 
 /**
  * Karta postaci.
- * Pola z `description` do `character_version` odwzorowują spec SillyTavern V2/V3.
+ * Pola z `description` do `character_version` odwzorowuja spec SillyTavern V2/V3.
  */
 export interface CharacterCard {
   id: string
@@ -70,23 +73,30 @@ export interface CharacterCard {
   summary?: string
   portrait?: string
 
-  /** Pełny oryginalny spec ST z importu. */
+  /** Pelny oryginalny spec ST z importu. */
   rawSpec?: Record<string, unknown>
+
+  /** Server-assigned metadane do optimistic lockingu. */
+  _serverCreatedAt?: number
+  _serverUpdatedAt?: number
 }
 
 /**
- * Persona użytkownika.
- * Imię i opis trafiają do system promptu, żeby AI miało punkt odniesienia.
- * Avatar służy wyłącznie do wyglądu w UI.
+ * Persona uzytkownika.
+ * Imie i opis trafiaja do system promptu, zeby AI mialo punkt odniesienia.
+ * Avatar sluzy wylacznie do wygladu w UI.
  */
 export interface Persona {
   id: string
   name: string
   description?: string
   avatar?: string
+  /** Server-assigned metadane do optimistic lockingu. */
+  _serverCreatedAt?: number
+  _serverUpdatedAt?: number
 }
 
-/** Parametry samplera wysyłane do LLM (OpenAI-compatible). */
+/** Parametry samplera wysylane do LLM (OpenAI-compatible). */
 export interface SamplerParams {
   temperature?: number
   topP?: number
@@ -95,7 +105,7 @@ export interface SamplerParams {
   presencePenalty?: number
 }
 
-/** Konfiguracja jednego profilu API (zapisana, możliwa do wyboru). */
+/** Konfiguracja jednego profilu API (zapisana, mozliwa do wyboru). */
 export interface ApiProfile {
   id: string
   name: string
@@ -107,9 +117,9 @@ export interface ApiProfile {
   contextLength: number
   streamingEnabled: boolean
   memoryMessages: number
-  /** Czy obsługuje vision (wysyłanie obrazów) */
+  /** Czy obsluguje vision (wysylanie obrazow) */
   visionEnabled: boolean
-  /** Model do vision (jeśli inny niż główny) */
+  /** Model do vision (jesli inny niz glowny) */
   visionModel?: string
 }
 
@@ -130,13 +140,13 @@ export interface PromptBlock {
   enabled: boolean
 }
 
-/** Kolejność bloków per postać ('' = globalna). */
+/** Kolejnosc blokow per postac ('' = globalna). */
 export interface PromptOrderEntry {
   characterId: string
   order: Array<{ identifier: string; enabled: boolean }>
 }
 
-/** Cały styl — jak JSON z TAVO. */
+/** Caly styl - jak JSON z TAVO. */
 export interface StyleConfig {
   impersonationPrompt?: string
   newChatPrompt?: string
@@ -156,6 +166,9 @@ export interface StylePreset {
   id: string
   name: string
   style: StyleConfig
+  /** Server-assigned metadane do optimistic lockingu. */
+  _serverCreatedAt?: number
+  _serverUpdatedAt?: number
 }
 
 export type MessageRole = 'user' | 'assistant'
@@ -169,7 +182,7 @@ export interface ToolCall {
   results?: WebSearchResult[]
   /** Stan generowania obrazu (dla type: 'image'). */
   status?: 'generating' | 'done' | 'error'
-  /** Komunikat błędu / info (dla type: 'image'). */
+  /** Komunikat bledu / info (dla type: 'image'). */
   error?: string
 }
 
@@ -180,7 +193,7 @@ export interface WebSearchResult {
   source?: string
 }
 
-/** Załącznik do wiadomości (np. obraz) */
+/** Zalacznik do wiadomosci (np. obraz) */
 export interface MessageAttachment {
   type: 'image'
   data: string // base64 data URL
@@ -197,19 +210,19 @@ export interface APIToolCall {
   }
 }
 
-/** Jeden wariant treści wiadomości (swipe). */
+/** Jeden wariant tresci wiadomosci (swipe). */
 export interface MessageVariant {
   content: string
   toolCall?: ToolCall
   /** Tokeny reasoning/thinking wygenerowane przez model (opcjonalne). */
   thinking?: string
-  /** Załączniki (obrazy) */
+  /** Zalaczniki (obrazy) */
   attachments?: MessageAttachment[]
 }
 
 /**
- * Wiadomość w konwersacji.
- * Wiadomości asystenta mogą mieć wiele wariantów (regeneracje).
+ * Wiadomosc w konwersacji.
+ * Wiadomosci asystenta moga miec wiele wariantow (regeneracje).
  */
 export interface ChatMessage {
   id: string
@@ -219,12 +232,12 @@ export interface ChatMessage {
   timestamp: number
 }
 
-/** Pojedynczy wpis pamięci długotrwałej. */
+/** Pojedynczy wpis pamieci dlugotrwalej. */
 export interface LongTermMemoryEntry {
   id: string
   content: string
   timestamp: number
-  /** Indeks ostatniej wiadomości, która została uwzględniona w tym wpisie. */
+  /** Indeks ostatniej wiadomosci, ktora zostala uwzgledniona w tym wpisie. */
   messageIndex: number
 }
 
@@ -233,14 +246,17 @@ export interface Conversation {
   characterId: string
   messages: ChatMessage[]
   unread: number
-  /** Opcjonalny override persony dla tej konwersacji (undefined = domyślna). */
+  /** Opcjonalny override persony dla tej konwersacji (undefined = domyslna). */
   personaId?: string
-  /** Opcjonalny override stylu dla tej konwersacji (undefined = domyślny). */
+  /** Opcjonalny override stylu dla tej konwersacji (undefined = domyslny). */
   styleId?: string
   /** Aktywne lorebooki dla tej konwersacji. */
   lorebookIds?: string[]
-  /** Pamięć długotrwała – lista podsumowań. */
+  /** Pamiec dlugotrwala - lista podsumowan. */
   longTermMemory: LongTermMemoryEntry[]
-  /** Indeks ostatniej wiadomości, która została już podsumowana. */
+  /** Indeks ostatniej wiadomosci, ktora zostala juz podsumowana. */
   lastSummarizedIndex: number
+  /** Server-assigned metadane do optimistic lockingu. */
+  _serverCreatedAt?: number
+  _serverUpdatedAt?: number
 }

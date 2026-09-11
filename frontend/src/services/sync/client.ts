@@ -1,11 +1,12 @@
 /**
  * Klient HTTP do serwera RP Sync.
  *
- * Trzyma token JWT w localStorage (`rp-sync-token`) i dokłada go do każdego
- * żądania jako `Authorization: Bearer`. Reaguje na 401 globalnie — czyści
- * token i powiadamia subskrybentów (AuthContext się wylogowuje).
+ * Trzyma token JWT w localStorage (`rp-sync-token`) i doklada go do kazdego
+ * zadania jako `Authorization: Bearer`. Reaguje na 401 globalnie - czysci
+ * token i powiadamia subskrybentow (AuthContext sie wylogowuje).
  *
- * Wszystkie endpointy przechodzą przez `request<T>(path, opts)`.
+ * 409 Conflict: rzuca ConflictError z payloadem z serwera. Warstwa wyzej
+ * (entities.ts) opakowuje to w ConflictError z aktualna wersja encji.
  */
 
 import { syncUrl } from './config'
@@ -31,7 +32,25 @@ export function setToken(token: string | null): void {
     if (token) localStorage.setItem(TOKEN_KEY, token)
     else localStorage.removeItem(TOKEN_KEY)
   } catch {
-    // localStorage może być niedostępny w trybie prywatnym — ignorujemy.
+    // localStorage moze byc niedostepny w trybie prywatnym - ignorujemy.
+  }
+}
+
+// --- Blad konfliktu (409) ---
+
+/**
+ * Rzucany gdy serwer zwroci 409. `payload` zawiera `current` - aktualna
+ * wersje encji z serwera. Warstwa encji (entities.ts) rzuca dalej
+ * ConflictError z typowanym `current` dla konkretnego typu encji.
+ */
+export class ConflictError<T = unknown> extends Error {
+  constructor(
+    public current: T | null,
+    public path: string,
+    public id: string,
+  ) {
+    super('Konflikt: encja zostala zmieniona na innym urzadzeniu')
+    this.name = 'ConflictError'
   }
 }
 
@@ -53,18 +72,18 @@ function fireUnauthorized(): void {
     try {
       h()
     } catch {
-      // ignorujemy błędy subskrybentów
+      // ignorujemy bledy subskrybentow
     }
   }
 }
 
-// --- Rdzeń ---
+// --- Rdzen ---
 
 interface RequestOptions {
   method?: string
   body?: unknown
   signal?: AbortSignal
-  /** Login używa tego, żeby nie odpalać globalnego logout na 401. */
+  /** Login uzywa tego, zeby nie odpalac globalnego logout na 401. */
   skipUnauthorized?: boolean
 }
 
@@ -84,15 +103,25 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
       signal: opts.signal,
     })
   } catch (err) {
-    // Network error (backend offline, DNS, CORS). Zachowujemy oryginalny komunikat.
     throw new Error(
-      `Nie można połączyć się z serwerem: ${err instanceof Error ? err.message : String(err)}`,
+      `Nie mozna polaczyc sie z serwerem: ${err instanceof Error ? err.message : String(err)}`,
     )
   }
 
   if (resp.status === 401 && !opts.skipUnauthorized) {
     fireUnauthorized()
-    throw new Error('Sesja wygasła. Zaloguj się ponownie.')
+    throw new Error('Sesja wygasla. Zaloguj sie ponownie.')
+  }
+
+  if (resp.status === 409) {
+    // Backend zwrocil konflikt - parsujemy payload i rzucamy ConflictError.
+    // Warstwa encji (entities.ts) dokladnie wie co zrobic z `current`.
+    const payload = (await resp.json().catch(() => ({ error: 'Konflikt' }))) as Record<string, unknown>
+    const current = (payload as { current?: unknown }).current ?? null
+    const err = new ConflictError(current, path, '')
+    // Doklejamy surowy payload, zeby entities.ts mogl go przepakowac.
+    ;(err as ConflictError & { payload?: unknown }).payload = payload
+    throw err
   }
 
   if (!resp.ok) {
@@ -100,7 +129,6 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
     throw new Error((errBody as { error?: string }).error || `HTTP ${resp.status}`)
   }
 
-  // 204 bez treści (np. delete) — zwróć undefined jako T.
   if (resp.status === 204) return undefined as T
 
   return (await resp.json()) as T
@@ -112,8 +140,6 @@ export async function login(username: string, password: string): Promise<LoginRe
   const resp = await request<LoginResponse>('/auth/login', {
     method: 'POST',
     body: { username, password },
-    // 401 przy złych danych logowania NIE ma czyścić sesji (żadnej nie ma) — 
-    // pokazujemy tylko komunikat błędu.
     skipUnauthorized: true,
   })
   setToken(resp.token)

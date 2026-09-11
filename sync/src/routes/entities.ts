@@ -2,18 +2,26 @@
  * Generyczne endpointy CRUD dla encji (characters, personas, conversations,
  * styles, lorebooks).
  *
- * Wszystkie encje mają identyczną sygnaturę: id, user_id, name, blob_id,
- * data_json, timestampy. Różnice między typami są w zawartości data_json.
- * Dzięki temu jedna fabryka obsługuje wszystkie pięć typów.
+ * Wszystkie encje maja identyczna sygnature: id, user_id, name, blob_id,
+ * data_json, timestampy. Roznice miedzy typami sa w zawartosci data_json.
+ * Dzieki temu jedna fabryka obsluguje wszystkie piec typow.
  *
  * Operacje:
  *   GET    /       lista encji danego typu
  *   GET    /:id    pojedyncza encja
- *   PUT    /:id    upsert (id z URL, treść z body)
+ *   PUT    /:id    upsert z optimistic locking
  *   DELETE /:id    soft delete
  *
- * Blob (portret / avatar) trzymamy w kolumnie `blob_id` jako denormalizację,
- * a pełny obiekt (włącznie z referencją do bloba) w `data_json`.
+ * Optimistic locking:
+ *   Klient przy PUT moze podac pole `expectedUpdatedAt` (timestamp z
+ *   ostatniego odczytu). Jesli rozni sie od aktualnego `updated_at` w bazie,
+ *   ktos inny zmodyfikowal encje w miedzyczasie - zwracamy 409 Conflict
+ *   z aktualna wersja encji w polu `current`, zeby klient mogl ja przyjac
+ *   bez dodatkowego GET-a.
+ *
+ *   Brak `expectedUpdatedAt` = brak sprawdzania (kompatybilnosc wstecz).
+ *   Encja nowa (nie istnieje w bazie) = brak sprawdzania (nie ma z czym
+ *   porownywac). Zwracane encje zawsze maja pole `updatedAt` (server-assigned).
  */
 
 import { Hono } from 'hono'
@@ -33,9 +41,19 @@ interface EntityRow {
   deleted_at: number | null
 }
 
+/** Dokleja server-assigned metadane do encji zwracanej klientowi. */
+function withServerMeta(row: EntityRow): Record<string, unknown> {
+  const data = JSON.parse(row.data_json) as Record<string, unknown>
+  return {
+    ...data,
+    _serverCreatedAt: row.created_at,
+    _serverUpdatedAt: row.updated_at,
+  }
+}
+
 /**
- * @param entityType  wartość kolumny `type` w tabeli entities
- * @param blobField   nazwa pola w body, które wskazuje na blob (np. portraitBlobId)
+ * @param entityType  wartosc kolumny `type` w tabeli entities
+ * @param blobField   nazwa pola w body, ktore wskazuje na blob (np. portraitBlobId)
  */
 export function createEntityRoutes(
   entityType: EntityChangedEvent['entityType'],
@@ -56,7 +74,7 @@ export function createEntityRoutes(
       )
       .all(userId, entityType) as EntityRow[]
 
-    return c.json({ items: rows.map((r) => JSON.parse(r.data_json)) })
+    return c.json({ items: rows.map(withServerMeta) })
   })
 
   // --- POJEDYNCZA ---
@@ -71,17 +89,17 @@ export function createEntityRoutes(
       .get(userId, entityType, id) as EntityRow | null
 
     if (!row) return c.json({ error: 'Nie znaleziono' }, 404)
-    return c.json(JSON.parse(row.data_json))
+    return c.json(withServerMeta(row))
   })
 
-  // --- UPSERT ---
+  // --- UPSERT z optimistic locking ---
   app.put('/:id', async (c) => {
     const userId = c.get('userId')
     const id = c.req.param('id')
     const body = await c.req.json().catch(() => null)
 
     if (!body || typeof body !== 'object') {
-      return c.json({ error: 'Nieprawidłowy JSON w body' }, 400)
+      return c.json({ error: 'Nieprawidlowy JSON w body' }, 400)
     }
 
     const obj = body as Record<string, unknown>
@@ -89,15 +107,43 @@ export function createEntityRoutes(
     const blobId = blobField && typeof obj[blobField] === 'string'
       ? (obj[blobField] as string)
       : null
-    const dataJson = JSON.stringify({ ...obj, id })
+
+    // Wyciagamy pole kontrolne z body, zeby nie trafilo do data_json.
+    const expectedUpdatedAt =
+      typeof obj._expectedUpdatedAt === 'number' ? (obj._expectedUpdatedAt as number) : undefined
+    const { _expectedUpdatedAt: _ignored, _serverCreatedAt: _ignored2, _serverUpdatedAt: _ignored3, ...cleanObj } = obj
+
     const now = Date.now()
+    const dataJson = JSON.stringify({ ...cleanObj, id })
 
     const existing = db
       .query(
-        `SELECT created_at FROM entities
+        `SELECT created_at, updated_at FROM entities
          WHERE user_id = ? AND type = ? AND id = ?`,
       )
-      .get(userId, entityType, id) as { created_at: number } | null
+      .get(userId, entityType, id) as { created_at: number; updated_at: number } | null
+
+    // Optimistic locking: sprawdzamy tylko gdy encja istnieje i klient podal
+    // oczekiwana wersje. Brak expectedUpdatedAt = brak sprawdzania.
+    if (existing && expectedUpdatedAt !== undefined && existing.updated_at !== expectedUpdatedAt) {
+      // Ktos zmodyfikowal encje w miedzyczasie. Zwracamy aktualna wersje
+      // z bazy + flage _conflict, zeby klient wiedzial ze to konflikt.
+      const currentRow = db
+        .query(
+          `SELECT * FROM entities
+           WHERE user_id = ? AND type = ? AND id = ? AND deleted_at IS NULL`,
+        )
+        .get(userId, entityType, id) as EntityRow | null
+
+      return c.json(
+        {
+          error: 'Konflikt: encja zostala zmieniona na innym urzadzeniu',
+          conflict: true,
+          current: currentRow ? withServerMeta(currentRow) : null,
+        },
+        409,
+      )
+    }
 
     if (existing) {
       db.run(
@@ -122,7 +168,12 @@ export function createEntityRoutes(
       id,
     })
 
-    return c.json({ ...obj, id, createdAt: existing?.created_at ?? now, updatedAt: now })
+    return c.json({
+      ...cleanObj,
+      id,
+      _serverCreatedAt: existing?.created_at ?? now,
+      _serverUpdatedAt: now,
+    })
   })
 
   // --- SOFT DELETE ---

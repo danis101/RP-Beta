@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CharacterCard, ChatMessage, Conversation, Persona, LongTermMemoryEntry, MessageAttachment, WebSearchResult, APIToolCall, ToolCall, StylePreset, Lorebook } from './types'
 import { MockAdapter, OpenAIAdapter, type ApiAdapter, type OpenAIMessage } from './services/api'
 import { charactersApi, personasApi, conversationsApi, stylesApi, lorebooksApi } from './services/sync'
+import { ConflictError } from './services/sync/client'
 import { buildSystemPrompt } from './lib/prompt'
 import { buildStyledSystemPrompt, getStyledChatInjections } from './lib/style'
 import { activateLorebooks } from './lib/lorebook'
@@ -10,6 +11,7 @@ import { substituteTokens } from './lib/tokens'
 import { useI18n } from './i18n'
 import { useSettings } from './context/SettingsContext'
 import { useAuth } from './context/AuthContext'
+import { useConflict } from './context/ConflictContext'
 import { generateSummary, shouldSummarize } from './lib/summarizer'
 import { getTool, type ToolContext, type ToolResult } from './lib/toolRegistry'
 import { generateImage } from './lib/imageGen'
@@ -26,8 +28,9 @@ import PersonaManager from './components/persona/PersonaManager'
 import PromptViewer from './components/chat/PromptViewer'
 import LongTermMemoryEditor from './components/chat/LongTermMemoryEditor'
 import AdminPanel from './components/admin/AdminPanel'
+import ConflictBanners from './components/chat/ConflictBanners'
 
-/** Buduje pierwszą wiadomość asystenta z wariantów first_mes + alternate_greetings. */
+/** Buduje pierwsza wiadomosc asystenta z wariantow first_mes + alternate_greetings. */
 function buildFirstMessage(card: CharacterCard): ChatMessage[] {
   const variants: Array<{ content: string }> = []
 
@@ -52,6 +55,7 @@ export default function App() {
   const { t } = useI18n()
   const { settings } = useSettings()
   const { user } = useAuth()
+  const { pushBanner } = useConflict()
   const route = useHashRoute()
   const [view, setView] = useState<AppView>('chat')
   const [sidebarOpen, setSidebarOpen] = useState(true)
@@ -73,6 +77,10 @@ export default function App() {
   const [summarizing, setSummarizing] = useState(false)
   const [toolRunning, setToolRunning] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
+
+  // Ref na aktualna liste konwersacji - do optimistic lockingu w callbackach.
+  const conversationsRef = useRef<Conversation[]>([])
+  conversationsRef.current = conversations
 
   const activeProfile = settings.aiProfiles.find((p) => p.id === settings.activeAiProfileId) ?? settings.aiProfiles[0]
 
@@ -142,12 +150,11 @@ export default function App() {
         setStylePresets(styles)
         setLorebooks(lbs)
 
-        // Aktywna konwersacja: pierwsza z listy lub pierwsza pasująca do pierwszej postaci.
         const firstConv = convs[0]
         setActiveId(firstConv?.id ?? null)
       } catch (err) {
         if (cancelled) return
-        console.error('Błąd wczytywania danych:', err)
+        console.error('Blad wczytywania danych:', err)
         setLoadError(err instanceof Error ? err.message : String(err))
       } finally {
         if (!cancelled) setReady(true)
@@ -166,7 +173,6 @@ export default function App() {
       setView(nextView)
       setSidebarOpen(true)
     }
-    // Kliknięcie w nav czyści hash — żeby wyjść z #/admin.
     if (window.location.hash) window.location.hash = ''
   }
 
@@ -190,7 +196,7 @@ export default function App() {
         setConversations((prev) => [...prev, newConv])
         setActiveId(newConv.id)
       } catch (err) {
-        console.error('Nie udało się utworzyć konwersacji:', err)
+        console.error('Nie udalo sie utworzyc konwersacji:', err)
         return
       }
     }
@@ -217,11 +223,54 @@ export default function App() {
     .map((id) => lorebooks.find((l) => l.id === id))
     .filter((l): l is Lorebook => Boolean(l))
 
-  /** Zapisuje konwersację do serwera (optimistic, w tle). */
+  /**
+   * Zapisuje konwersacje do serwera z optimistic lockingiem.
+   *
+   * Sukces: cicho aktualizujemy lokalny stan (nic nie robimy - optimistic
+   * update juz zrobiony przez setState przed wywolaniem).
+   *
+   * Konflikt (409): ktos zmodyfikowal konwersacje na innym urzadzeniu.
+   * Pokazujemy banner z przyciskiem "Odswiez" - user decyduje czy
+   * przyjac wersje z serwera (traci swoje lokalne zmiany) czy zamknac.
+   */
   const persistConversation = (conversation: Conversation) => {
-    void conversationsApi.update(conversation).catch((err) => {
-      console.warn('Zapis konwersacji do serwera nie powiódł się:', err)
-    })
+    void conversationsApi
+      .update(conversation)
+      .then((saved) => {
+        // Aktualizujemy _serverUpdatedAt w lokalnym stanie, zeby kolejny
+        // save mial swiezy timestamp i nie wywalal falszywego konfliktu.
+        setConversations((prev) =>
+          prev.map((c) =>
+            c.id === saved.id ? { ...c, _serverUpdatedAt: saved._serverUpdatedAt, _serverCreatedAt: saved._serverCreatedAt } : c,
+          ),
+        )
+      })
+      .catch((err) => {
+        if (err instanceof ConflictError) {
+          const current = err.current as Conversation | null
+          if (!current) {
+            // Encja zostala usunieta na innym urzadzeniu.
+            pushBanner({
+              title: t('conflictDeletedTitle'),
+              description: t('conflictDeletedDesc'),
+              onRefresh: () => {
+                setConversations((prev) => prev.filter((c) => c.id !== conversation.id))
+              },
+            })
+            return
+          }
+          pushBanner({
+            title: t('conflictChangedTitle'),
+            description: t('conflictChangedDesc'),
+            onRefresh: () => {
+              // Przyjmujemy wersje z serwera.
+              setConversations((prev) => prev.map((c) => (c.id === current.id ? current : c)))
+            },
+          })
+          return
+        }
+        console.warn('Zapis konwersacji do serwera nie powiodl sie:', err)
+      })
   }
 
   const handleStop = () => {
@@ -233,8 +282,8 @@ export default function App() {
 
     const tokenCtx = {
       charName: activeCharacter.name,
-      userName: activePersona?.name ?? 'Użytkownik',
-      personaName: activePersona?.name ?? 'Użytkownik',
+      userName: activePersona?.name ?? 'Uzytkownik',
+      personaName: activePersona?.name ?? 'Uzytkownik',
     }
 
     const memory = activeProfile?.memoryMessages ?? 20
@@ -314,7 +363,7 @@ export default function App() {
     }
 
     if (!hasMemoryMarker && longTermMemoryText) {
-      messages.push({ role: 'system', content: `[Pamięć długotrwała]\n${longTermMemoryText}` })
+      messages.push({ role: 'system', content: `[Pamiec dlugotrwala]\n${longTermMemoryText}` })
     }
 
     let injectionIndex = 0
@@ -478,7 +527,7 @@ export default function App() {
         }
       } catch (error) {
         console.error('Tool execution error:', error)
-        finalContent = accumulated + `\n\n⚠️ Błąd wykonania narzędzia: ${error instanceof Error ? error.message : String(error)}`
+        finalContent = accumulated + `\n\nBlad wykonania narzedzia: ${error instanceof Error ? error.message : String(error)}`
       } finally {
         setToolRunning(false)
       }
@@ -486,7 +535,7 @@ export default function App() {
 
     if (followUpMessages.length > 0 && !extraMessages) {
       const tempVariant = {
-        content: '🔍 Wykonywanie narzędzia...',
+        content: 'Wykonywanie narzedzia...',
         thinking: thinking || undefined,
         toolCall: collectedToolCalls.length === 1 ? collectedToolCalls[0] : undefined,
       }
@@ -610,7 +659,7 @@ export default function App() {
     setIsTyping(false)
     abortRef.current = null
 
-    const conv = conversations.find((c) => c.id === activeId)
+    const conv = conversationsRef.current.find((c) => c.id === activeId)
     if (conv && settings.summarizerEnabled) {
       const threshold = settings.summarizerThreshold ?? 10
       if (shouldSummarize(conv.lastSummarizedIndex, conv.messages.length, threshold)) {
@@ -627,8 +676,8 @@ export default function App() {
       return
     }
 
-    console.error('Błąd adaptera:', error)
-    const errorContent = `⚠️ Błąd: ${error.message}`
+    console.error('Blad adaptera:', error)
+    const errorContent = `Blad: ${error.message}`
     setConversations((prev) =>
       prev.map((c) => {
         if (c.id !== activeId) return c
@@ -755,7 +804,7 @@ export default function App() {
     try {
       await conversationsApi.remove(id)
     } catch (err) {
-      console.warn('Nie udało się usunąć konwersacji na serwerze:', err)
+      console.warn('Nie udalo sie usunac konwersacji na serwerze:', err)
     }
     const next = conversations.filter((c) => c.id !== id)
     setConversations(next)
@@ -765,34 +814,46 @@ export default function App() {
   // --- Karty postaci ---
   const handleSaveCard = async (card: CharacterCard) => {
     try {
-      await charactersApi.update(card)
+      const saved = await charactersApi.update(card)
+      setCharacters((prev) => {
+        const exists = prev.some((c) => c.id === saved.id)
+        return exists ? prev.map((c) => (c.id === saved.id ? saved : c)) : [...prev, saved]
+      })
     } catch (err) {
-      console.error('Zapis karty nie powiódł się:', err)
+      if (err instanceof ConflictError) {
+        const current = err.current as CharacterCard | null
+        pushBanner({
+          title: t('conflictChangedTitle'),
+          description: t('conflictChangedDesc'),
+          onRefresh: () => {
+            if (current) {
+              setCharacters((prev) => prev.map((c) => (c.id === current.id ? current : c)))
+            }
+          },
+        })
+        return
+      }
+      console.error('Zapis karty nie powiodl sie:', err)
       alert(err instanceof Error ? err.message : String(err))
       return
     }
 
-    setCharacters((prev) => {
-      const exists = prev.some((c) => c.id === card.id)
-      return exists ? prev.map((c) => (c.id === card.id ? card : c)) : [...prev, card]
-    })
-
-    // Automatycznie utwórz konwersację dla nowej karty.
-    if (!conversations.some((c) => c.characterId === card.id)) {
+    const cardId = card.id
+    if (!conversations.some((c) => c.characterId === cardId)) {
       const newConv: Conversation = {
         id: crypto.randomUUID(),
-        characterId: card.id,
+        characterId: cardId,
         messages: buildFirstMessage(card),
         unread: 0,
         longTermMemory: [],
         lastSummarizedIndex: -1,
       }
       try {
-        await conversationsApi.update(newConv)
-        setConversations((prev) => [...prev, newConv])
-        setActiveId(newConv.id)
+        const savedConv = await conversationsApi.update(newConv)
+        setConversations((prev) => [...prev, savedConv])
+        setActiveId(savedConv.id)
       } catch (err) {
-        console.warn('Nie udało się utworzyć konwersacji:', err)
+        console.warn('Nie udalo sie utworzyc konwersacji:', err)
       }
     }
   }
@@ -801,16 +862,15 @@ export default function App() {
     try {
       await charactersApi.remove(id)
     } catch (err) {
-      console.warn('Usuwanie karty na serwerze nie powiodło się:', err)
+      console.warn('Usuwanie karty na serwerze nie powiodlo sie:', err)
     }
 
-    // Usuwamy też powiązane konwersacje.
     const related = conversations.filter((c) => c.characterId === id)
     for (const conv of related) {
       try {
         await conversationsApi.remove(conv.id)
       } catch (err) {
-        console.warn('Usuwanie konwersacji nie powiodło się:', err)
+        console.warn('Usuwanie konwersacji nie powiodlo sie:', err)
       }
     }
 
@@ -821,13 +881,26 @@ export default function App() {
   // --- Persony ---
   const handleSavePersona = async (persona: Persona) => {
     try {
-      await personasApi.update(persona)
+      const saved = await personasApi.update(persona)
       setPersonas((prev) => {
-        const exists = prev.some((p) => p.id === persona.id)
-        return exists ? prev.map((p) => (p.id === persona.id ? persona : p)) : [...prev, persona]
+        const exists = prev.some((p) => p.id === saved.id)
+        return exists ? prev.map((p) => (p.id === saved.id ? saved : p)) : [...prev, saved]
       })
     } catch (err) {
-      console.error('Zapis persony nie powiódł się:', err)
+      if (err instanceof ConflictError) {
+        const current = err.current as Persona | null
+        pushBanner({
+          title: t('conflictChangedTitle'),
+          description: t('conflictChangedDesc'),
+          onRefresh: () => {
+            if (current) {
+              setPersonas((prev) => prev.map((p) => (p.id === current.id ? current : p)))
+            }
+          },
+        })
+        return
+      }
+      console.error('Zapis persony nie powiodl sie:', err)
       alert(err instanceof Error ? err.message : String(err))
     }
   }
@@ -837,20 +910,33 @@ export default function App() {
       await personasApi.remove(id)
       setPersonas((prev) => prev.filter((p) => p.id !== id))
     } catch (err) {
-      console.warn('Usuwanie persony nie powiodło się:', err)
+      console.warn('Usuwanie persony nie powiodlo sie:', err)
     }
   }
 
   // --- Style ---
   const handleSaveStyle = async (preset: StylePreset) => {
     try {
-      await stylesApi.update(preset)
+      const saved = await stylesApi.update(preset)
       setStylePresets((prev) => {
-        const exists = prev.some((s) => s.id === preset.id)
-        return exists ? prev.map((s) => (s.id === preset.id ? preset : s)) : [...prev, preset]
+        const exists = prev.some((s) => s.id === saved.id)
+        return exists ? prev.map((s) => (s.id === saved.id ? saved : s)) : [...prev, saved]
       })
     } catch (err) {
-      console.error('Zapis stylu nie powiódł się:', err)
+      if (err instanceof ConflictError) {
+        const current = err.current as StylePreset | null
+        pushBanner({
+          title: t('conflictChangedTitle'),
+          description: t('conflictChangedDesc'),
+          onRefresh: () => {
+            if (current) {
+              setStylePresets((prev) => prev.map((s) => (s.id === current.id ? current : s)))
+            }
+          },
+        })
+        return
+      }
+      console.error('Zapis stylu nie powiodl sie:', err)
       alert(err instanceof Error ? err.message : String(err))
     }
   }
@@ -859,25 +945,34 @@ export default function App() {
     try {
       await stylesApi.remove(id)
       setStylePresets((prev) => prev.filter((s) => s.id !== id))
-      if (settings.defaultStyleId === id) {
-        // czyścimy default lokalnie
-        // (nie ma API do zmiany ustawień przez sync w tym etapie)
-      }
     } catch (err) {
-      console.warn('Usuwanie stylu nie powiodło się:', err)
+      console.warn('Usuwanie stylu nie powiodlo sie:', err)
     }
   }
 
   // --- Lorebooki ---
   const handleSaveLorebook = async (lorebook: Lorebook) => {
     try {
-      await lorebooksApi.update(lorebook)
+      const saved = await lorebooksApi.update(lorebook)
       setLorebooks((prev) => {
-        const exists = prev.some((l) => l.id === lorebook.id)
-        return exists ? prev.map((l) => (l.id === lorebook.id ? lorebook : l)) : [...prev, lorebook]
+        const exists = prev.some((l) => l.id === saved.id)
+        return exists ? prev.map((l) => (l.id === saved.id ? saved : l)) : [...prev, saved]
       })
     } catch (err) {
-      console.error('Zapis lorebooka nie powiódł się:', err)
+      if (err instanceof ConflictError) {
+        const current = err.current as Lorebook | null
+        pushBanner({
+          title: t('conflictChangedTitle'),
+          description: t('conflictChangedDesc'),
+          onRefresh: () => {
+            if (current) {
+              setLorebooks((prev) => prev.map((l) => (l.id === current.id ? current : l)))
+            }
+          },
+        })
+        return
+      }
+      console.error('Zapis lorebooka nie powiodl sie:', err)
       alert(err instanceof Error ? err.message : String(err))
     }
   }
@@ -887,7 +982,7 @@ export default function App() {
       await lorebooksApi.remove(id)
       setLorebooks((prev) => prev.filter((l) => l.id !== id))
     } catch (err) {
-      console.warn('Usuwanie lorebooka nie powiodło się:', err)
+      console.warn('Usuwanie lorebooka nie powiodlo sie:', err)
     }
   }
 
@@ -957,7 +1052,7 @@ export default function App() {
     runSummarizer(activeConversation)
   }
 
-  // --- Generowanie obrazu z przycisku (frontend, bez tool-calla) ---
+  // --- Generowanie obrazu z przycisku ---
   const handleGenerateImage = async () => {
     if (!activeConversation || !activeCharacter) return
     if (!settings.imageGenEnabled) return
@@ -1005,7 +1100,7 @@ export default function App() {
       const finalToolCall: ToolCall = result.status === 'done'
         ? { type: 'image', label: 'Wygenerowany obraz', imageUrl: result.dataUrl, status: 'done' }
         : result.status === 'processing'
-          ? { type: 'image', label: 'Generowanie obrazu', status: 'generating', error: 'Generowanie trwa dłużej niż 45s.' }
+          ? { type: 'image', label: 'Generowanie obrazu', status: 'generating', error: 'Generowanie trwa dluzej niz 45s.' }
           : { type: 'image', label: 'Generowanie obrazu', status: 'error', error: result.message }
 
       setConversations((prev) =>
@@ -1078,10 +1173,10 @@ export default function App() {
     )
   }
 
-  // Admin panel przez hash routing (#/admin).
   if (route === 'admin' && user?.isAdmin) {
     return (
-      <div className="flex h-screen overflow-hidden bg-surface-dark">
+      <div className="relative flex h-screen overflow-hidden bg-surface-dark">
+        <ConflictBanners />
         <NavigationRail
           activeView={view}
           onNavigate={handleNavigate}
@@ -1094,7 +1189,8 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-surface-dark">
+    <div className="relative flex h-screen overflow-hidden bg-surface-dark">
+      <ConflictBanners />
       <NavigationRail
         activeView={view}
         onNavigate={handleNavigate}
