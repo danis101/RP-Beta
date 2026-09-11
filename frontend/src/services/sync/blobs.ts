@@ -4,8 +4,7 @@
  * POST /blobs  multipart/form-data z polem "file"
  *   -> { id: sha256, sha256, size, mime }
  *
- * Backend jest idempotentny po sha256 - ten sam plik drugi raz = ten sam id,
- * zero duplikatow na dysku.
+ * Backend jest idempotentny po sha256 - ten sam plik drugi raz = ten sam id.
  */
 
 import { getToken } from './client'
@@ -20,11 +19,7 @@ export interface BlobUploadResult {
 
 /**
  * Konwertuje Uint8Array na swiezy ArrayBuffer.
- *
- * Powod: TypeScript 5.7+ typuje Uint8Array jako Uint8Array<ArrayBufferLike>,
- * gdzie ArrayBufferLike moze byc SharedArrayBuffer - a BlobPart wymaga
- * konkretnie ArrayBuffer. Kopiowanie przez new ArrayBuffer + set() daje
- * jednoznacznie ArrayBuffer, ktory TS akceptuje wszedzie.
+ * Wymagane przez TS 5.7+ ktory odroznia ArrayBuffer od SharedArrayBuffer.
  */
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   const ab = new ArrayBuffer(bytes.byteLength)
@@ -34,7 +29,6 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 
 /**
  * Uploaduje blob z danymi binarnymi (Uint8Array) i zwraca jego sha256.
- * Konwertuje na File zeby poszlo jako multipart.
  */
 export async function uploadBlob(bytes: Uint8Array, mime: string, filename = 'blob'): Promise<string> {
   const buffer = toArrayBuffer(bytes)
@@ -42,9 +36,6 @@ export async function uploadBlob(bytes: Uint8Array, mime: string, filename = 'bl
   const form = new FormData()
   form.append('file', blob, filename)
 
-  // Nie uzywamy `request()` bo ona ustawia Content-Type: application/json.
-  // Musimy uzyc fetch bezposrednio z FormData (przegladarka sama ustawi
-  // Content-Type: multipart/form-data z odpowiednim boundary).
   const token = getToken()
   const headers: Record<string, string> = {}
   if (token) headers['Authorization'] = `Bearer ${token}`
@@ -65,8 +56,7 @@ export async function uploadBlob(bytes: Uint8Array, mime: string, filename = 'bl
 }
 
 /**
- * Uploaduje blob z data URL (base64). Uzywane przy imporcie portretow
- * z PNG kart ST, gdzie portret jest inline base64.
+ * Uploaduje blob z data URL (base64).
  */
 export async function uploadBlobFromDataUrl(dataUrl: string): Promise<string> {
   const match = /^data:([^;]+);base64,(.+)$/.exec(dataUrl)
@@ -76,7 +66,6 @@ export async function uploadBlobFromDataUrl(dataUrl: string): Promise<string> {
   const mime = match[1]
   const base64 = match[2]
 
-  // atob -> binarny string -> Uint8Array
   const binary = atob(base64)
   const bytes = new Uint8Array(binary.length)
   for (let i = 0; i < binary.length; i++) {
@@ -86,6 +75,14 @@ export async function uploadBlobFromDataUrl(dataUrl: string): Promise<string> {
   return uploadBlob(bytes, mime, 'upload')
 }
 
-/** Uploaduje blob z File (z input[type=file]). */
+/**
+ * Uploaduje blob z File (z input[type=file]).
+ */
 export async function uploadBlobFromFile(file: File): Promise<string> {
-  const bytes = new Uint8Array(await file.arrayBuffer
+  const bytes = new Uint8Array(await file.arrayBuffer())
+  return uploadBlob(bytes, file.type || 'application/octet-stream', file.name)
+}
+
+// === END OF FILE ===
+// Jesli nie widzisz tego markera na dole, wklejanie bylo uciete.
+// Powtorz: Ctrl+A -> Delete -> Ctrl+V.
