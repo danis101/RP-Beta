@@ -73,7 +73,12 @@ export default function ChatList({ characters, conversations, activeId, onSelect
               }`}
             >
               <div className="relative shrink-0">
-                <Avatar src={character.portrait} name={character.name} size="md" />
+                {/* Preferuj nowy format bloba (portraitBlobId), fallback na stary base64 (portrait). */}
+                <Avatar
+                  src={character.portraitBlobId ?? character.portrait}
+                  name={character.name}
+                  size="md"
+                />
                 <span
                   title={t(dot.labelKey)}
                   className={`absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-surface-light ${dot.color}`}
@@ -104,3 +109,4 @@ export default function ChatList({ characters, conversations, activeId, onSelect
     </aside>
   )
 }
+
