@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { CharacterCard, ChatMessage, Conversation, Persona, LongTermMemoryEntry, MessageAttachment, WebSearchResult, APIToolCall, ToolCall, StylePreset, Lorebook } from './types'
+import type { CharacterCard, ChatMessage, Conversation, Persona, LongTermMemoryEntry, MessageAttachment, MessageVariant, WebSearchResult, APIToolCall, ToolCall, StylePreset, Lorebook } from './types'
 import { MockAdapter, OpenAIAdapter, type ApiAdapter, type OpenAIMessage } from './services/api'
 import { charactersApi, personasApi, conversationsApi, stylesApi, lorebooksApi, connectSyncWs, isRecentSelfSave, SETTINGS_WS_ID, uploadBlobFromBlob } from './services/sync'
 import { ConflictError } from './services/sync/client'
@@ -31,6 +31,9 @@ import PromptViewer from './components/chat/PromptViewer'
 import LongTermMemoryEditor from './components/chat/LongTermMemoryEditor'
 import AdminPanel from './components/admin/AdminPanel'
 import ConflictBanners from './components/chat/ConflictBanners'
+
+/** Tryb zakonczenia generacji. */
+type CompletionMode = 'append' | 'replace' | 'regenerate'
 
 function buildFirstMessage(card: CharacterCard): ChatMessage[] {
   const variants: Array<{ content: string }> = []
@@ -74,6 +77,7 @@ export default function App() {
   const [activeId, setActiveId] = useState<string | null>(null)
   const [isTyping, setIsTyping] = useState(false)
   const [streamingText, setStreamingText] = useState('')
+  const [replacingMessageId, setReplacingMessageId] = useState<string | null>(null)
   const [hiddenSummaries, setHiddenSummaries] = useState<Set<string>>(new Set())
   const [lastPrompt, setLastPrompt] = useState<{ messages: OpenAIMessage[]; model: string } | null>(null)
   const [summarizing, setSummarizing] = useState(false)
@@ -481,7 +485,7 @@ export default function App() {
   const runCompletion = async (
     history: ChatMessage[],
     targetMessageId: string,
-    mode: 'append' | 'replace',
+    mode: CompletionMode,
     extraMessages?: OpenAIMessage[],
     toolResults?: WebSearchResult[],
     toolLabel?: string,
@@ -491,6 +495,8 @@ export default function App() {
 
     setIsTyping(true)
     setStreamingText('')
+    // 'regenerate' i 'replace' pokazuja streaming W MIEJSCU starej wiadomosci.
+    setReplacingMessageId(mode === 'append' ? null : targetMessageId)
 
     let accumulated = ''
     let thinking = ''
@@ -556,7 +562,7 @@ export default function App() {
     thinking: string,
     toolCalls: APIToolCall[],
     targetMessageId: string,
-    mode: 'append' | 'replace',
+    mode: CompletionMode,
     history: ChatMessage[],
     extraMessages?: OpenAIMessage[],
     existingToolResults?: WebSearchResult[],
@@ -673,10 +679,12 @@ export default function App() {
         }),
       )
 
+      // Drugi przebieg: replace docelowo podmienia tymczasowy wariant.
       await runCompletion(history, tempId, 'replace', followUpMessages, toolResults, toolLabel)
 
       setStreamingText('')
       setIsTyping(false)
+      setReplacingMessageId(null)
       abortRef.current = null
       return
     }
@@ -700,7 +708,7 @@ export default function App() {
             }
           : undefined
 
-    const newVariant = {
+    const newVariant: MessageVariant = {
       content: finalContent,
       thinking: thinking || undefined,
       toolCall: finalTool,
@@ -732,10 +740,20 @@ export default function App() {
         }
 
         if (targetIndex !== -1) {
-          messages[targetIndex] = {
-            ...messages[targetIndex],
-            variants: [newVariant],
-            selectedVariant: 0,
+          if (mode === 'regenerate') {
+            // Regeneracja: dodaj nowy wariant obok istniejacych (swipe/strzalki).
+            messages[targetIndex] = {
+              ...messages[targetIndex],
+              variants: [...messages[targetIndex].variants, newVariant],
+              selectedVariant: messages[targetIndex].variants.length,
+            }
+          } else {
+            // replace: podmien wszystkie warianty (uzywane przy follow-up tool).
+            messages[targetIndex] = {
+              ...messages[targetIndex],
+              variants: [newVariant],
+              selectedVariant: 0,
+            }
           }
           const updated: Conversation = { ...c, messages, unread: 0 }
           persistConversation(updated)
@@ -748,6 +766,7 @@ export default function App() {
 
     setStreamingText('')
     setIsTyping(false)
+    setReplacingMessageId(null)
     abortRef.current = null
 
     const conv = conversationsRef.current.find((c) => c.id === activeId)
@@ -763,6 +782,7 @@ export default function App() {
     if (error.name === 'AbortError') {
       setStreamingText('')
       setIsTyping(false)
+      setReplacingMessageId(null)
       abortRef.current = null
       return
     }
@@ -784,6 +804,7 @@ export default function App() {
 
     setStreamingText('')
     setIsTyping(false)
+    setReplacingMessageId(null)
     abortRef.current = null
   }
 
@@ -807,18 +828,43 @@ export default function App() {
     await runCompletion(updated.messages, userMessage.id, 'append')
   }
 
-  /**
-   * Recznie ustawia toolCall w wiadomosci (uzywane przy regeneracji obrazka).
-   */
-  const setMessageToolCall = (messageId: string, toolCall: ToolCall | undefined) => {
+  /** Dodaje nowy wariant do wiadomosci. Zwraca jego indeks (lub -1). */
+  const appendVariant = (messageId: string, variant: MessageVariant): number => {
+    const conv = conversationsRef.current.find((c) => c.id === activeId)
+    const msg = conv?.messages.find((m) => m.id === messageId)
+    if (!msg) return -1
+    const newIdx = msg.variants.length
+
     setConversations((prev) =>
       prev.map((c) => {
         if (c.id !== activeId) return c
         const messages = c.messages.map((m) => {
           if (m.id !== messageId) return m
-          const variant = m.variants[m.selectedVariant] ?? m.variants[0]
+          return {
+            ...m,
+            variants: [...m.variants, variant],
+            selectedVariant: m.variants.length,
+          }
+        })
+        const updated: Conversation = { ...c, messages }
+        persistConversation(updated)
+        return updated
+      }),
+    )
+
+    return newIdx
+  }
+
+  /** Aktualizuje konkretny wariant (patch). Uzywane przy regeneracji obrazu. */
+  const updateVariantAt = (messageId: string, variantIndex: number, patch: Partial<MessageVariant>) => {
+    setConversations((prev) =>
+      prev.map((c) => {
+        if (c.id !== activeId) return c
+        const messages = c.messages.map((m) => {
+          if (m.id !== messageId) return m
+          if (variantIndex < 0 || variantIndex >= m.variants.length) return m
           const variants = [...m.variants]
-          variants[m.selectedVariant] = { ...variant, toolCall }
+          variants[variantIndex] = { ...variants[variantIndex], ...patch }
           return { ...m, variants }
         })
         const updated: Conversation = { ...c, messages }
@@ -829,68 +875,84 @@ export default function App() {
   }
 
   /**
-   * Regeneracja samego obrazka - wysyla ten sam prompt do mostka ponownie,
-   * BEZ wywolywania LLM. Uzywane gdy user kliknie Regeneruj na wiadomosci
-   * ktora jest samym obrazkiem (np. z rozdzki).
+   * Regeneracja samego obrazka - ten sam prompt do mostka, BEZ wywolywania LLM.
+   * Dodaje nowy wariant (swipe/strzalki dzialaja jak przy wiadomosciach tekstowych).
    */
   const regenerateImage = async (messageId: string, prompt: string) => {
     const baseUrl = settings.imageGenBaseUrl
     const responseFormat = settings.imageGenResponseFormat
+
     if (!baseUrl) {
-      setMessageToolCall(messageId, {
-        type: 'image',
-        label: 'Generowanie obrazu',
-        status: 'error',
-        error: 'Nie ustawiono adresu backendu generowania obrazow.',
-        prompt,
+      appendVariant(messageId, {
+        content: '',
+        toolCall: {
+          type: 'image',
+          label: 'Generowanie obrazu',
+          status: 'error',
+          error: 'Nie ustawiono adresu backendu generowania obrazow.',
+          prompt,
+        },
       })
       return
     }
 
-    // Ustaw status generating (bez zmiany promptu).
-    setMessageToolCall(messageId, {
-      type: 'image',
-      label: 'Generowanie obrazu',
-      status: 'generating',
-      prompt,
+    // Nowy wariant od razu widoczny (user swipuje na niego, stary zachowany).
+    const newIdx = appendVariant(messageId, {
+      content: '',
+      toolCall: {
+        type: 'image',
+        label: 'Generowanie obrazu',
+        status: 'generating',
+        prompt,
+      },
     })
+
+    if (newIdx < 0) return
 
     try {
       const result = await generateImage(prompt, { baseUrl, responseFormat })
 
       if (result.status === 'done') {
         const blobId = await uploadBlobFromBlob(result.blob, 'regenerated.png')
-        setMessageToolCall(messageId, {
-          type: 'image',
-          label: 'Wygenerowany obraz',
-          imageBlobId: blobId,
-          status: 'done',
-          prompt,
+        updateVariantAt(messageId, newIdx, {
+          toolCall: {
+            type: 'image',
+            label: 'Wygenerowany obraz',
+            imageBlobId: blobId,
+            status: 'done',
+            prompt,
+          },
         })
       } else if (result.status === 'processing') {
-        setMessageToolCall(messageId, {
-          type: 'image',
-          label: 'Generowanie obrazu',
-          status: 'generating',
-          error: 'Generowanie trwa dluzej niz 45s.',
-          prompt,
+        updateVariantAt(messageId, newIdx, {
+          toolCall: {
+            type: 'image',
+            label: 'Generowanie obrazu',
+            status: 'generating',
+            error: 'Generowanie trwa dluzej niz 45s.',
+            prompt,
+          },
         })
       } else {
-        setMessageToolCall(messageId, {
-          type: 'image',
-          label: 'Generowanie obrazu',
-          status: 'error',
-          error: result.message,
-          prompt,
+        updateVariantAt(messageId, newIdx, {
+          toolCall: {
+            type: 'image',
+            label: 'Generowanie obrazu',
+            status: 'error',
+            error: result.message,
+            prompt,
+          },
         })
       }
     } catch (error) {
-      setMessageToolCall(messageId, {
-        type: 'image',
-        label: 'Generowanie obrazu',
-        status: 'error',
-        error: error instanceof Error ? error.message : String(error),
-        prompt,
+      updateVariantAt(messageId, newIdx, {
+        toolCall: {
+          type: 'image',
+          label: 'Generowanie obrazu',
+          status: 'error',
+          error: error instanceof Error ? error.message : String(error),
+          prompt,
+        },
       })
     }
   }
@@ -904,7 +966,7 @@ export default function App() {
     const variant = target.variants[target.selectedVariant] ?? target.variants[0]
     const toolCall = variant?.toolCall
 
-    // Sam obrazek z zapisanym promptem (np. rozdzka) - regeneruj bez LLM.
+    // Sam obrazek z zapisanym promptem (rozdzka) - regeneruj bez LLM.
     if (
       target.role === 'assistant' &&
       toolCall?.type === 'image' &&
@@ -915,11 +977,36 @@ export default function App() {
       return
     }
 
-    // Standardowa sciezka: regeneracja LLM.
+    // Standardowa regeneracja LLM - append nowego wariantu.
     if (target.role === 'assistant') {
-      await runCompletion(activeConversation.messages.slice(0, index), messageId, 'replace')
+      await runCompletion(activeConversation.messages.slice(0, index), messageId, 'regenerate')
     } else {
       await runCompletion(activeConversation.messages.slice(0, index + 1), messageId, 'append')
+    }
+  }
+
+  /**
+   * Swipe w lewo: nastepny wariant. Jesli juz jestesmy na ostatnim ->
+   * regeneruj (jak w ST/TAVO).
+   */
+  const handleSwipeNext = (messageId: string) => {
+    if (!activeConversation) return
+    const msg = activeConversation.messages.find((m) => m.id === messageId)
+    if (!msg) return
+    if (msg.selectedVariant < msg.variants.length - 1) {
+      handleSwitchVariant(messageId, 1)
+    } else {
+      void handleRegenerate(messageId)
+    }
+  }
+
+  /** Swipe w prawo: poprzedni wariant. Nic nie robi na pierwszym. */
+  const handleSwipePrev = (messageId: string) => {
+    if (!activeConversation) return
+    const msg = activeConversation.messages.find((m) => m.id === messageId)
+    if (!msg) return
+    if (msg.selectedVariant > 0) {
+      handleSwitchVariant(messageId, -1)
     }
   }
 
@@ -1242,8 +1329,8 @@ export default function App() {
   }
 
   /**
-   * Generowanie obrazu z przycisku (rozdzka).
-   * Zapisuje prompt w toolCall, zeby Regeneruj moglo odtworzyc ten sam obraz.
+   * Generowanie obrazu z rozdzki. Zapisuje prompt w toolCall, zeby
+   * Regeneruj moglo odtworzyc ten sam obraz (dodajac nowy wariant).
    */
   const handleGenerateImage = async () => {
     if (!activeConversation || !activeCharacter) return
@@ -1438,12 +1525,15 @@ export default function App() {
               activeLorebookIds={activeConversation.lorebookIds ?? []}
               isTyping={isTyping || toolRunning}
               streamingText={streamingText}
+              replacingMessageId={replacingMessageId}
               onSend={handleSend}
               onStop={handleStop}
               onEditMessage={handleEditMessage}
               onDeleteMessage={handleDeleteMessage}
               onRegenerate={handleRegenerate}
               onSwitchVariant={handleSwitchVariant}
+              onSwipeNext={handleSwipeNext}
+              onSwipePrev={handleSwipePrev}
               showSummary={!hiddenSummaries.has(activeConversation.id)}
               summaryText={activeConversation.longTermMemory.length > 0
                 ? activeConversation.longTermMemory[activeConversation.longTermMemory.length - 1].content

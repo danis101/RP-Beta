@@ -16,12 +16,18 @@ interface ChatViewProps {
   persona: Persona
   isTyping: boolean
   streamingText: string
+  /** Gdy ustawione, wiadomosc o tym id jest tymczasowo ukrywana i zastepowana streamem. */
+  replacingMessageId?: string | null
   onSend: (text: string, attachments?: MessageAttachment[]) => void
   onStop: () => void
   onEditMessage: (messageId: string, content: string) => void
   onDeleteMessage: (messageId: string) => void
   onRegenerate: (messageId: string) => void
   onSwitchVariant: (messageId: string, delta: -1 | 1) => void
+  /** Swipe w lewo: nastepny wariant lub regeneracja (na ostatnim). */
+  onSwipeNext?: (messageId: string) => void
+  /** Swipe w prawo: poprzedni wariant. */
+  onSwipePrev?: (messageId: string) => void
   onCloseSummary: () => void
   onDeleteConversation: () => void
   onPickPersona: (personaId: string | null) => void
@@ -43,19 +49,24 @@ interface ChatViewProps {
   onGenerateImage: () => void
 }
 
-/** Główny widok konwersacji. */
+/** Szerokosc progu swipe (px). */
+const SWIPE_THRESHOLD = 55
+
 export default function ChatView({
   character,
   messages,
   persona,
   isTyping,
   streamingText,
+  replacingMessageId = null,
   onSend,
   onStop,
   onEditMessage,
   onDeleteMessage,
   onRegenerate,
   onSwitchVariant,
+  onSwipeNext,
+  onSwipePrev,
   onCloseSummary,
   onDeleteConversation,
   onPickPersona,
@@ -86,6 +97,9 @@ export default function ChatView({
   const [editDraft, setEditDraft] = useState('')
   const menuRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+
+  // Tracking dotkniec dla swipe.
+  const touchRef = useRef<{ id: string; x: number } | null>(null)
 
   const tokenContext: TokenContext = {
     charName: character.name,
@@ -133,11 +147,14 @@ export default function ChatView({
         ? t('chatStatusAway')
         : t('chatStatusOffline')
 
+  // Streaming na dole tylko w trybie 'append' (nie przy regeneracji).
+  const showBottomStreaming = !!streamingText && !replacingMessageId
+
   return (
     <main className="flex min-w-0 flex-1 flex-col bg-surface-dark">
-      {/* Nagłówek */}
+      {/* Naglowek */}
       <div className="flex items-center gap-3 border-b border-edge bg-surface px-5 py-4">
-        <Avatar src={character.portrait} name={character.name} size="sm" />
+        <Avatar src={character.portraitBlobId ?? character.portrait} name={character.name} size="sm" />
         <div className="min-w-0 flex-1">
           <h1 className="truncate text-[14.5px] font-semibold text-[#f2f2f4]">{character.name}</h1>
           <p className="mt-1 truncate text-[11.5px] text-[#75757f]">
@@ -163,7 +180,6 @@ export default function ChatView({
 
           {menuOpen && (
             <div className="absolute right-0 top-full z-50 mt-1 max-h-[70vh] w-56 overflow-y-auto rounded-xl border border-edge bg-surface shadow-lg shadow-black/30">
-              {/* Podgląd promptu */}
               <button
                 onClick={() => {
                   setMenuOpen(false)
@@ -175,7 +191,6 @@ export default function ChatView({
                 {t('chatShowPrompt')}
               </button>
 
-              {/* Persona */}
               <button
                 onClick={() => {
                   setPersonaMenuOpen((prev) => !prev)
@@ -219,7 +234,6 @@ export default function ChatView({
                 </div>
               )}
 
-              {/* Styl */}
               <button
                 onClick={() => {
                   setStyleMenuOpen((prev) => !prev)
@@ -263,7 +277,6 @@ export default function ChatView({
                 </div>
               )}
 
-              {/* Lorebooki */}
               <button
                 onClick={() => {
                   setLorebookMenuOpen((prev) => !prev)
@@ -299,7 +312,6 @@ export default function ChatView({
                 </div>
               )}
 
-              {/* Summarizer */}
               <button
                 onClick={() => {
                   setMenuOpen(false)
@@ -340,7 +352,7 @@ export default function ChatView({
         </div>
       </div>
 
-      {/* Summarizer – wyświetlanie podsumowania */}
+      {/* Summarizer – wyswietlanie podsumowania */}
       {showSummary && summaryText && (
         <div className="mx-5 mt-3 flex items-start gap-2 rounded-xl border border-[#252b45] bg-[#161a2a] px-4 py-3.5">
           <p className="flex-1 text-[12.5px] leading-relaxed text-[#b8bdd0]">{summaryText}</p>
@@ -353,15 +365,37 @@ export default function ChatView({
         </div>
       )}
 
-      {/* Wiadomości */}
+      {/* Wiadomosci */}
       <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-5 py-5">
         {messages.map((msg, index) => {
           const isLast = index === messages.length - 1
           const canRegenerate = msg.role === 'assistant' || isLast
           const editing = editingId === msg.id
+          const isReplacing = replacingMessageId === msg.id && !!streamingText
 
           return (
-            <div key={msg.id} className={`group flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+            <div
+              key={msg.id}
+              className={`group flex touch-pan-y ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+              onTouchStart={(e) => {
+                if (msg.role !== 'assistant') return
+                touchRef.current = { id: msg.id, x: e.touches[0].clientX }
+              }}
+              onTouchEnd={(e) => {
+                if (msg.role !== 'assistant') return
+                const start = touchRef.current
+                touchRef.current = null
+                if (!start || start.id !== msg.id) return
+                const delta = e.changedTouches[0].clientX - start.x
+                if (Math.abs(delta) < SWIPE_THRESHOLD) return
+                if (isTyping || isReplacing) return
+                if (delta > 0) {
+                  onSwipePrev?.(msg.id)
+                } else {
+                  onSwipeNext?.(msg.id)
+                }
+              }}
+            >
               <div className="flex max-w-[90%] flex-col gap-1">
                 {editing ? (
                   <div className="space-y-1.5 w-full min-w-[300px]">
@@ -381,6 +415,18 @@ export default function ChatView({
                       </button>
                     </div>
                   </div>
+                ) : isReplacing ? (
+                  /* Podczas regeneracji: stara wiadomosc ukryta, streaming w jej miejscu. */
+                  <ChatBubble
+                    message={{
+                      id: `streaming-${msg.id}`,
+                      role: 'assistant',
+                      variants: [{ content: streamingText }],
+                      selectedVariant: 0,
+                      timestamp: Date.now(),
+                    }}
+                    tokens={tokenContext}
+                  />
                 ) : (
                   <>
                     <ChatBubble message={msg} tokens={tokenContext} />
@@ -404,7 +450,8 @@ export default function ChatView({
           )
         })}
 
-        {streamingText && (
+        {/* Streaming na dole tylko w trybie 'append' */}
+        {showBottomStreaming && (
           <ChatBubble
             message={{
               id: 'streaming',
@@ -434,7 +481,6 @@ export default function ChatView({
         <div ref={bottomRef} />
       </div>
 
-      {/* Pole wiadomości z marginesami */}
       <div className="shrink-0 px-5 pb-5 pt-1">
         <InputBar
           onSend={onSend}
@@ -460,3 +506,5 @@ export default function ChatView({
     </main>
   )
 }
+
+// === END OF FILE ===
