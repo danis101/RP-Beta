@@ -6,13 +6,22 @@
  *
  * Brak optimistic lockingu - LWW. Wersja z serwera jest zrodlem prawdy,
  * ostatni zapis wygrywa.
+ *
+ * Self-save filter: backend broadcastuje event entity.changed z
+ * entityType='settings', id='singleton'. markSelfSave('singleton')
+ * (ten sam id) sprawia ze WS listener w App odfiltruje echo wlasnego zapisu.
  */
 
 import { request } from './client'
 import { markSelfSave } from './ws'
 import type { AppSettings } from '../../context/SettingsContext'
 
-const SELF_SAVE_ID = 'settings:singleton'
+/**
+ * ID ustawien w tabeli entities po stronie serwera (routes/settings.ts).
+ * Ten sam string jest uzywany w eventach WebSocket - dlatego self-save
+ * filter musi znac dokladnie ta wartosc.
+ */
+export const SETTINGS_WS_ID = 'singleton'
 
 interface GetResponse {
   settings: AppSettings | null
@@ -35,10 +44,7 @@ export const settingsApi = {
       method: 'PUT',
       body: settings,
     })
-    // Oznacz ze to nasz wlasny zapis - WS listener odfiltruje echo.
-    markSelfSave(SELF_SAVE_ID)
+    // Znacz ze to nasz wlasny zapis - WS listener odfiltruje echo.
+    markSelfSave(SETTINGS_WS_ID)
   },
 }
-
-/** ID do porownania z eventem WS (entityType='settings' + id='singleton'). */
-export const SETTINGS_WS_ID = 'singleton'

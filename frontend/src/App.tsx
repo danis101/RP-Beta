@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CharacterCard, ChatMessage, Conversation, Persona, LongTermMemoryEntry, MessageAttachment, WebSearchResult, APIToolCall, ToolCall, StylePreset, Lorebook } from './types'
 import { MockAdapter, OpenAIAdapter, type ApiAdapter, type OpenAIMessage } from './services/api'
-import { charactersApi, personasApi, conversationsApi, stylesApi, lorebooksApi, connectSyncWs, isRecentSelfSave } from './services/sync'
+import { charactersApi, personasApi, conversationsApi, stylesApi, lorebooksApi, connectSyncWs, isRecentSelfSave, SETTINGS_WS_ID } from './services/sync'
 import { ConflictError } from './services/sync/client'
 import { mergeConversations } from './lib/conversationMerge'
 import { buildSystemPrompt } from './lib/prompt'
@@ -53,7 +53,7 @@ function buildFirstMessage(card: CharacterCard): ChatMessage[] {
 
 export default function App() {
   const { t } = useI18n()
-  const { settings } = useSettings()
+  const { settings, refreshFromServer } = useSettings()
   const { user } = useAuth()
   const { pushBanner } = useConflict()
   const route = useHashRoute()
@@ -82,7 +82,6 @@ export default function App() {
   const conversationsRef = useRef<Conversation[]>([])
   conversationsRef.current = conversations
 
-  // Ref na activeId - zeby WS handler nie mial stale closure.
   const activeIdRef = useRef<string | null>(null)
   activeIdRef.current = activeId
 
@@ -122,7 +121,6 @@ export default function App() {
     return new MockAdapter()
   }, [refinerProfile])
 
-  // Auto-poll statusu aktywnego API/modelu.
   useEffect(() => {
     if (!activeProfile) return
     const timer = window.setTimeout(() => {
@@ -134,9 +132,6 @@ export default function App() {
     }
   }, [activeProfile])
 
-  /**
-   * Wczytuje wszystkie encje z serwera (uzywane przy manualnym refreshu).
-   */
   const reloadAll = async (opts: { silent?: boolean } = {}): Promise<void> => {
     if (!opts.silent) setRefreshing(true)
     try {
@@ -157,7 +152,6 @@ export default function App() {
     }
   }
 
-  // Pierwsze wczytanie danych z serwera.
   useEffect(() => {
     let cancelled = false
     ;(async () => {
@@ -195,12 +189,10 @@ export default function App() {
   // --- WebSocket: live sync z innych urzadzen ---
   useEffect(() => {
     const cleanup = connectSyncWs((event) => {
-      // Filtr: pomijamy echo wlasnej zmiany (sam zapisalem, sam bym dostal event).
       if (isRecentSelfSave(event.id)) return
 
       if (event.entityType === 'conversation') {
         if (event.action === 'deleted') {
-          // Ktos usunal konwersacje na innym urzadzeniu - usuwamy z listy.
           setConversations((prev) => prev.filter((c) => c.id !== event.id))
           if (activeIdRef.current === event.id) {
             setActiveId((prev) => {
@@ -212,7 +204,6 @@ export default function App() {
           return
         }
 
-        // updated / created: refetch pojedynczej i zmerge'uj z lokalnym stanem.
         void conversationsApi
           .get(event.id)
           .then((remote) => {
@@ -226,13 +217,20 @@ export default function App() {
             })
           })
           .catch(() => {
-            // 404 - usuniete, ale nie dostalismy delete eventu.
             setConversations((prev) => prev.filter((c) => c.id !== event.id))
           })
         return
       }
 
-      // Dla pozostalych typow - refetch listy (male, tanie, zadne "live editing").
+      // Settings: osobny przypadek - refreshFromServer zamiast listy.
+      // Event ma id='singleton' (patrz routes/settings.ts + SETTINGS_WS_ID).
+      if (event.entityType === 'settings') {
+        if (event.id === SETTINGS_WS_ID) {
+          void refreshFromServer()
+        }
+        return
+      }
+
       if (event.entityType === 'character') {
         void charactersApi.list().then(setCharacters).catch(() => {})
       } else if (event.entityType === 'persona') {
@@ -245,17 +243,17 @@ export default function App() {
     })
 
     return cleanup
-  }, [])
+  }, [refreshFromServer])
 
   const handleManualRefresh = async () => {
     try {
       await reloadAll()
+      await refreshFromServer()
     } catch (err) {
       console.error('Manual refresh nie powiodl sie:', err)
     }
   }
 
-  // --- Nawigacja ---
   const handleNavigate = (nextView: AppView) => {
     if (nextView === 'chat' && view === 'chat') {
       setSidebarOpen((prev) => !prev)
@@ -313,10 +311,6 @@ export default function App() {
     .map((id) => lorebooks.find((l) => l.id === id))
     .filter((l): l is Lorebook => Boolean(l))
 
-  /**
-   * Zapisuje konwersacje do serwera z optimistic lockingiem i auto-merge.
-   * Szczegoly: patrz persistConversationInternal.
-   */
   const persistConversation = (conversation: Conversation) => {
     void persistConversationInternal(conversation, false)
   }
@@ -906,7 +900,6 @@ export default function App() {
     if (activeId === id) setActiveId(next[0]?.id ?? null)
   }
 
-  // --- Karty postaci ---
   const handleSaveCard = async (card: CharacterCard) => {
     try {
       const saved = await charactersApi.update(card)
@@ -973,7 +966,6 @@ export default function App() {
     setConversations((prev) => prev.filter((c) => c.characterId !== id))
   }
 
-  // --- Persony ---
   const handleSavePersona = async (persona: Persona) => {
     try {
       const saved = await personasApi.update(persona)
@@ -1009,7 +1001,6 @@ export default function App() {
     }
   }
 
-  // --- Style ---
   const handleSaveStyle = async (preset: StylePreset) => {
     try {
       const saved = await stylesApi.update(preset)
@@ -1045,7 +1036,6 @@ export default function App() {
     }
   }
 
-  // --- Lorebooki ---
   const handleSaveLorebook = async (lorebook: Lorebook) => {
     try {
       const saved = await lorebooksApi.update(lorebook)
@@ -1081,7 +1071,6 @@ export default function App() {
     }
   }
 
-  // --- Summarizer ---
   const runSummarizer = async (conv: Conversation) => {
     if (summarizing) return
     if (!activeCharacter) return
@@ -1147,7 +1136,6 @@ export default function App() {
     runSummarizer(activeConversation)
   }
 
-  // --- Generowanie obrazu z przycisku ---
   const handleGenerateImage = async () => {
     if (!activeConversation || !activeCharacter) return
     if (!settings.imageGenEnabled) return
@@ -1244,7 +1232,6 @@ export default function App() {
     )
   }
 
-  // --- Rendering ---
   if (!ready) {
     return (
       <div className="flex h-screen items-center justify-center bg-surface-dark text-[13px] text-[#75757f]">
