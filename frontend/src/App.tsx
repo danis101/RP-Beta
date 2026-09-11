@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CharacterCard, ChatMessage, Conversation, Persona, LongTermMemoryEntry, MessageAttachment, WebSearchResult, APIToolCall, ToolCall, StylePreset, Lorebook } from './types'
 import { MockAdapter, OpenAIAdapter, type ApiAdapter, type OpenAIMessage } from './services/api'
-import { charactersApi, personasApi, conversationsApi, stylesApi, lorebooksApi, connectSyncWs, isRecentSelfSave, SETTINGS_WS_ID } from './services/sync'
+import { charactersApi, personasApi, conversationsApi, stylesApi, lorebooksApi, connectSyncWs, isRecentSelfSave, SETTINGS_WS_ID, uploadBlobFromBlob } from './services/sync'
 import { ConflictError } from './services/sync/client'
+import { getBlobAsDataUrl } from './lib/blobCache'
 import { mergeConversations } from './lib/conversationMerge'
 import { buildSystemPrompt } from './lib/prompt'
 import { buildStyledSystemPrompt, getStyledChatInjections } from './lib/style'
@@ -222,8 +223,6 @@ export default function App() {
         return
       }
 
-      // Settings: osobny przypadek - refreshFromServer zamiast listy.
-      // Event ma id='singleton' (patrz routes/settings.ts + SETTINGS_WS_ID).
       if (event.entityType === 'settings') {
         if (event.id === SETTINGS_WS_ID) {
           void refreshFromServer()
@@ -366,7 +365,11 @@ export default function App() {
     abortRef.current?.abort()
   }
 
-  const buildMessages = (history: ChatMessage[]): OpenAIMessage[] => {
+  /**
+   * Buduje liste wiadomosci do LLM. Async bo zalaczniki w formacie blob
+   * musza byc pobrane z serwera jako base64 (vision wymaga inline data URL).
+   */
+  const buildMessages = async (history: ChatMessage[]): Promise<OpenAIMessage[]> => {
     if (!activeCharacter) return []
 
     const tokenCtx = {
@@ -378,7 +381,8 @@ export default function App() {
     const memory = activeProfile?.memoryMessages ?? 20
     const slicedHistory = memory > 0 ? history.slice(-memory) : history
 
-    const substituted = slicedHistory.map((m) => {
+    const substituted: OpenAIMessage[] = []
+    for (const m of slicedHistory) {
       const variant = m.variants[m.selectedVariant] ?? m.variants[0]
       const content = substituteTokens(getContent(m), tokenCtx)
       const attachments = variant.attachments ?? []
@@ -387,16 +391,16 @@ export default function App() {
         const parts: any[] = []
         if (content) parts.push({ type: 'text', text: content })
         for (const att of attachments) {
-          parts.push({
-            type: 'image_url',
-            image_url: { url: att.data },
-          })
+          // Nowy format: blobId (trzeba pobrac z serwera jako base64).
+          // Stary format: data URL inline.
+          const dataUrl = att.data ?? (att.blobId ? await getBlobAsDataUrl(att.blobId) : undefined)
+          if (dataUrl) parts.push({ type: 'image_url', image_url: { url: dataUrl } })
         }
-        return { role: 'user', content: parts }
+        substituted.push({ role: 'user', content: parts })
+      } else {
+        substituted.push({ role: m.role === 'assistant' ? 'assistant' : 'user', content })
       }
-
-      return { role: m.role === 'assistant' ? 'assistant' : 'user', content }
-    })
+    }
 
     const activated = activateLorebooks(activeLorebooks, slicedHistory)
 
@@ -494,7 +498,7 @@ export default function App() {
     let thinking = ''
     let toolCalls: APIToolCall[] = []
 
-    const baseMessages = buildMessages(history)
+    const baseMessages = await buildMessages(history)
     const messages = extraMessages ? [...baseMessages, ...extraMessages] : baseMessages
     setLastPrompt({ messages, model: activeProfile?.model ?? 'mock' })
 
@@ -1136,6 +1140,11 @@ export default function App() {
     runSummarizer(activeConversation)
   }
 
+  /**
+   * Generowanie obrazu z przycisku (frontend, bez tool-calla).
+   * Po generacji obraz jest uploadowany na /blobs jako blob (sha256),
+   * w wariancie zapisujemy tylko imageBlobId.
+   */
   const handleGenerateImage = async () => {
     if (!activeConversation || !activeCharacter) return
     if (!settings.imageGenEnabled) return
@@ -1180,11 +1189,32 @@ export default function App() {
 
       const result = await generateImage(prompt, { baseUrl, responseFormat })
 
-      const finalToolCall: ToolCall = result.status === 'done'
-        ? { type: 'image', label: 'Wygenerowany obraz', imageUrl: result.dataUrl, status: 'done' }
-        : result.status === 'processing'
-          ? { type: 'image', label: 'Generowanie obrazu', status: 'generating', error: 'Generowanie trwa dluzej niz 45s.' }
-          : { type: 'image', label: 'Generowanie obrazu', status: 'error', error: result.message }
+      let finalToolCall: ToolCall
+
+      if (result.status === 'done') {
+        // Upload do /blobs - trwale, zamiast base64 w wariancie.
+        const blobId = await uploadBlobFromBlob(result.blob, 'generated.png')
+        finalToolCall = {
+          type: 'image',
+          label: 'Wygenerowany obraz',
+          imageBlobId: blobId,
+          status: 'done',
+        }
+      } else if (result.status === 'processing') {
+        finalToolCall = {
+          type: 'image',
+          label: 'Generowanie obrazu',
+          status: 'generating',
+          error: 'Generowanie trwa dluzej niz 45s.',
+        }
+      } else {
+        finalToolCall = {
+          type: 'image',
+          label: 'Generowanie obrazu',
+          status: 'error',
+          error: result.message,
+        }
+      }
 
       setConversations((prev) =>
         prev.map((c) => {
@@ -1386,3 +1416,5 @@ export default function App() {
     </div>
   )
 }
+
+// === END OF FILE
