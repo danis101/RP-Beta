@@ -372,11 +372,12 @@ export default function ChatView({
           const canRegenerate = msg.role === 'assistant' || isLast
           const editing = editingId === msg.id
           const isReplacing = replacingMessageId === msg.id && !!streamingText
+          const isUser = msg.role === 'user'
 
           return (
             <div
               key={msg.id}
-              className={`group flex touch-pan-y ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+              className={`group flex touch-pan-y ${isUser ? 'justify-end' : 'justify-start'}`}
               onTouchStart={(e) => {
                 if (msg.role !== 'assistant') return
                 touchRef.current = { id: msg.id, x: e.touches[0].clientX }
@@ -396,9 +397,20 @@ export default function ChatView({
                 }
               }}
             >
-              <div className="flex max-w-[90%] flex-col gap-1">
+              {/*
+                Jeden wrapper na cala wiadomosc (bubble + actions).
+                `items-end` dla usera, `items-start` dla asystenta — kazde
+                dziecko (bubble, thinking, tool-call) jest wyrownane do
+                wlasciwej strony i ma swoja naturalna szerokosc (bez stretch).
+                max-w-[90%] cap na cala wiadomosc.
+              */}
+              <div
+                className={`flex max-w-[90%] min-w-0 flex-col gap-1 ${
+                  isUser ? 'items-end' : 'items-start'
+                }`}
+              >
                 {editing ? (
-                  <div className="space-y-1.5 w-full min-w-[300px]">
+                  <div className="w-full min-w-[300px] space-y-1.5">
                     <textarea
                       value={editDraft}
                       onChange={(e) => setEditDraft(e.target.value)}
@@ -430,19 +442,17 @@ export default function ChatView({
                 ) : (
                   <>
                     <ChatBubble message={msg} tokens={tokenContext} />
-                    <div className={msg.role === 'user' ? 'flex justify-end' : 'flex justify-start'}>
-                      <MessageActions
-                        role={msg.role}
-                        variantIndex={msg.selectedVariant}
-                        variantCount={msg.variants.length}
-                        canRegenerate={canRegenerate}
-                        onEdit={() => startEdit(msg)}
-                        onDelete={() => onDeleteMessage(msg.id)}
-                        onRegenerate={() => onRegenerate(msg.id)}
-                        onPrevVariant={() => onSwitchVariant(msg.id, -1)}
-                        onNextVariant={() => onSwitchVariant(msg.id, 1)}
-                      />
-                    </div>
+                    <MessageActions
+                      role={msg.role}
+                      variantIndex={msg.selectedVariant}
+                      variantCount={msg.variants.length}
+                      canRegenerate={canRegenerate}
+                      onEdit={() => startEdit(msg)}
+                      onDelete={() => onDeleteMessage(msg.id)}
+                      onRegenerate={() => onRegenerate(msg.id)}
+                      onPrevVariant={() => onSwitchVariant(msg.id, -1)}
+                      onNextVariant={() => onSwitchVariant(msg.id, 1)}
+                    />
                   </>
                 )}
               </div>
@@ -452,16 +462,20 @@ export default function ChatView({
 
         {/* Streaming na dole tylko w trybie 'append' */}
         {showBottomStreaming && (
-          <ChatBubble
-            message={{
-              id: 'streaming',
-              role: 'assistant',
-              variants: [{ content: streamingText }],
-              selectedVariant: 0,
-              timestamp: Date.now(),
-            }}
-            tokens={tokenContext}
-          />
+          <div className="flex justify-start">
+            <div className="flex max-w-[90%] min-w-0 flex-col gap-1 items-start">
+              <ChatBubble
+                message={{
+                  id: 'streaming',
+                  role: 'assistant',
+                  variants: [{ content: streamingText }],
+                  selectedVariant: 0,
+                  timestamp: Date.now(),
+                }}
+                tokens={tokenContext}
+              />
+            </div>
+          </div>
         )}
 
         {isTyping && !streamingText && (
@@ -508,3 +522,4 @@ export default function ChatView({
 }
 
 // === END OF FILE ===
+

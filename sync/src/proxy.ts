@@ -17,19 +17,18 @@
  *      dopuszczony przez PROXY_ALLOWED_HOSTS.
  *   3. REDIRECTY — `redirect: 'manual'`, jeden hop z rewalidacją allowlisty.
  *
- * Timeouty (dodane w Batch 2.7):
- *   Domyślnie Bun/undici czeka ~135s zanim odda błąd połączenia. Jeśli
- *   usługa docelowa nie odpowiada, requesty wiszą, a polling statusu API
- *   (co 60s) nagromadzi zombie. Ustawiamy krótszy timeout (15s) — jeśli
- *   LM Studio/mostek/SearXNG nie odpowie w 15s, to i tak nie odpowie.
+ * Timeouty — DWA OSOBNE (patrz config.ts):
+ *   GET/HEAD  (listy modeli, websearch)     → 60s (PROXY_TIMEOUT_GET_MS)
+ *   POST/PUT  (chat SSE, generacja obrazu)  → 10 min (PROXY_TIMEOUT_POST_MS)
  *
- *   Można nadpisać przez env PROXY_TIMEOUT_MS (np. dla wolnych modeli
- *   ładujących się długo po idle).
+ *   Krótszy timeout ZABIJA streaming SSE w połowie generacji. Dlatego
+ *   rozdzielone. Bez tego Bun/undici czeka ~135s na GET-ach i zombie
+ *   się nagromadzają przy pollingu statusu API.
  */
 
 import type { Context } from 'hono'
 import type { AppEnv } from './auth'
-import { PROXY_ALLOWED_HOSTS, PROXY_TIMEOUT_MS } from './config'
+import { PROXY_ALLOWED_HOSTS, PROXY_TIMEOUT_GET_MS, PROXY_TIMEOUT_POST_MS } from './config'
 
 /** Nagłówki, których NIE przekazujemy do backendu docelowego (hop-by-hop). */
 const SKIP_REQ_HEADERS = new Set([
@@ -40,11 +39,6 @@ const SKIP_REQ_HEADERS = new Set([
   'content-length',
 ])
 
-/**
- * Nagłówki, których NIE przekazujemy z powrotem do klienta.
- * `content-encoding` i `content-length` — Bun/undici automatycznie
- * dekompresuje ciało odpowiedzi, więc oryginalne wartości byłyby nieprawdziwe.
- */
 const SKIP_RESP_HEADERS = new Set([
   'transfer-encoding',
   'connection',
@@ -52,10 +46,7 @@ const SKIP_RESP_HEADERS = new Set([
   'content-encoding',
 ])
 
-/**
- * Nagłówki kontrolne proxy — nie forwardujemy ich do celu.
- * `x-rp-auth` to nasz JWT sync, nie może wyciec do zewnętrznej usługi.
- */
+/** Nagłówki kontrolne proxy — nie forwardujemy ich do celu. */
 const PROXY_CONTROL_HEADERS = new Set([
   'x-llm-target',
   'x-searxng-target',
@@ -63,9 +54,6 @@ const PROXY_CONTROL_HEADERS = new Set([
   'x-rp-auth',
 ])
 
-/**
- * Regex na prywatne / lokalne adresy. Domyślna allowlista.
- */
 const PRIVATE_HOST_RE = new RegExp(
   '^(' +
     'localhost' +
@@ -97,9 +85,27 @@ function isAllowedTarget(url: URL): boolean {
   return PRIVATE_HOST_RE.test(hostOnly)
 }
 
-/**
- * Buduje handler proxy dla danego prefiksu i nagłówka docelowego.
- */
+/** Timeout zależny od metody — GET krótki, POST długi (streaming SSE / obrazy). */
+function timeoutForMethod(method: string): number {
+  const m = method.toUpperCase()
+  if (m === 'GET' || m === 'HEAD') return PROXY_TIMEOUT_GET_MS
+  return PROXY_TIMEOUT_POST_MS
+}
+
+function isTimeoutError(err: unknown): boolean {
+  return (
+    err instanceof DOMException &&
+    (err.name === 'TimeoutError' || err.name === 'AbortError')
+  )
+}
+
+function describeError(err: unknown, timeoutMs: number): string {
+  if (isTimeoutError(err)) {
+    return `Timeout po ${timeoutMs} ms (usługa nie odpowiada)`
+  }
+  return err instanceof Error ? err.message : String(err)
+}
+
 export function makeProxyHandler(prefix: string, targetHeader: string) {
   return async (c: Context<AppEnv>): Promise<Response> => {
     const rawTarget = (c.req.header(targetHeader) ?? '').trim()
@@ -150,9 +156,8 @@ export function makeProxyHandler(prefix: string, targetHeader: string) {
       forwardHeaders.set(key, value)
     }
 
-    // Timeout 15s (konfigurowalny) — bez tego Bun czeka ~135s zanim odda błąd,
-    // a polling statusu API nagromadzi zombie requestów.
-    const timeoutSignal = AbortSignal.timeout(PROXY_TIMEOUT_MS)
+    const timeoutMs = timeoutForMethod(c.req.method)
+    const timeoutSignal = AbortSignal.timeout(timeoutMs)
 
     const fetchInit: RequestInit = {
       method: c.req.method,
@@ -172,15 +177,7 @@ export function makeProxyHandler(prefix: string, targetHeader: string) {
     try {
       upstream = await fetch(targetUrl, fetchInit)
     } catch (err) {
-      // Rozróżniamy timeout od innych błędów połączenia.
-      const isTimeout =
-        err instanceof DOMException && (err.name === 'TimeoutError' || err.name === 'AbortError')
-      const msg = isTimeout
-        ? `Timeout po ${PROXY_TIMEOUT_MS} ms (usługa nie odpowiada)`
-        : err instanceof Error
-          ? err.message
-          : String(err)
-
+      const msg = describeError(err, timeoutMs)
       console.error(
         `[proxy] ${c.req.method} ${prefix}${suffix} -> ${targetUrl} FAILED: ${msg}`,
       )
@@ -188,7 +185,7 @@ export function makeProxyHandler(prefix: string, targetHeader: string) {
         {
           error: `Nie można połączyć się z ${targetBase}: ${msg}`,
           target: targetUrl,
-          timeout: isTimeout,
+          timeout: isTimeoutError(err),
         },
         502,
       )
@@ -238,13 +235,7 @@ export function makeProxyHandler(prefix: string, targetHeader: string) {
         }
         upstream = upstream2
       } catch (err) {
-        const isTimeout =
-          err instanceof DOMException && (err.name === 'TimeoutError' || err.name === 'AbortError')
-        const msg = isTimeout
-          ? `Timeout po ${PROXY_TIMEOUT_MS} ms (redirect nie odpowiada)`
-          : err instanceof Error
-            ? err.message
-            : String(err)
+        const msg = describeError(err, timeoutMs)
         return c.json(
           { error: `Redirect nie udał się: ${msg}`, target: redirectUrl.toString() },
           502,
