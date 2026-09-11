@@ -22,15 +22,6 @@ interface NavigationRailProps {
   refreshing?: boolean
 }
 
-/**
- * Lewa ramka nawigacji.
- * U gory: persona, Rozmowy, Karty postaci.
- * Na dole: Lorebooki, Ustawienia, [Odswiez], [Admin], Wyloguj.
- *
- * "Odswiez" to manualny reload z serwera - przydatne zanim mamy WebSocket
- * live sync (Etap 3.5b). Klikniecie dociaga wszystkie 5 list i podmienia
- * stan w UI, zeby zobaczyc zmiany z innych urzadzen bez F5.
- */
 export default function NavigationRail({
   activeView,
   onNavigate,
@@ -72,6 +63,9 @@ export default function NavigationRail({
     )
   }
 
+  // Preferujemy nowy format blob (avatarBlobId), fallback na stary base64 (avatar).
+  const personaAvatarSrc = persona?.avatarBlobId ?? persona?.avatar
+
   return (
     <nav className="flex w-16 flex-col items-center gap-2 border-r border-edge bg-surface py-4">
       {/* Persona u gory */}
@@ -80,7 +74,7 @@ export default function NavigationRail({
         title={persona?.name ?? 'Persona'}
         className="mb-1 rounded-full transition-transform hover:scale-105"
       >
-        <Avatar src={persona?.avatar} name={persona?.name ?? '?'} size="md" />
+        <Avatar src={personaAvatarSrc} name={persona?.name ?? '?'} size="md" />
       </button>
 
       {topItems.map(renderButton)}
@@ -88,7 +82,6 @@ export default function NavigationRail({
       <div className="mt-auto flex flex-col items-center gap-2">
         {bottomItems.map(renderButton)}
 
-        {/* Manual refresh z serwera - ikona sie kreci podczas pobierania. */}
         {onManualRefresh && (
           <button
             title={t('navRefresh')}
@@ -100,7 +93,6 @@ export default function NavigationRail({
           </button>
         )}
 
-        {/* Panel admina - tylko dla adminow. Hash route: #/admin */}
         {user?.isAdmin && (
           <button
             title={t('navAdmin')}
