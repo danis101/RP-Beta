@@ -8,7 +8,8 @@
  * zero duplikatow na dysku.
  */
 
-import { request } from './client'
+import { getToken } from './client'
+import { syncUrl } from './config'
 
 export interface BlobUploadResult {
   id: string
@@ -18,20 +19,32 @@ export interface BlobUploadResult {
 }
 
 /**
+ * Konwertuje Uint8Array na swiezy ArrayBuffer.
+ *
+ * Powod: TypeScript 5.7+ typuje Uint8Array jako Uint8Array<ArrayBufferLike>,
+ * gdzie ArrayBufferLike moze byc SharedArrayBuffer - a BlobPart wymaga
+ * konkretnie ArrayBuffer. Kopiowanie przez new ArrayBuffer + set() daje
+ * jednoznacznie ArrayBuffer, ktory TS akceptuje wszedzie.
+ */
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const ab = new ArrayBuffer(bytes.byteLength)
+  new Uint8Array(ab).set(bytes)
+  return ab
+}
+
+/**
  * Uploaduje blob z danymi binarnymi (Uint8Array) i zwraca jego sha256.
- * Konwertuje na File żeby poszło jako multipart.
+ * Konwertuje na File zeby poszlo jako multipart.
  */
 export async function uploadBlob(bytes: Uint8Array, mime: string, filename = 'blob'): Promise<string> {
-  const blob = new Blob([bytes], { type: mime })
+  const buffer = toArrayBuffer(bytes)
+  const blob = new Blob([buffer], { type: mime })
   const form = new FormData()
   form.append('file', blob, filename)
 
   // Nie uzywamy `request()` bo ona ustawia Content-Type: application/json.
   // Musimy uzyc fetch bezposrednio z FormData (przegladarka sama ustawi
   // Content-Type: multipart/form-data z odpowiednim boundary).
-  const { getToken } = await import('./client')
-  const { syncUrl } = await import('./config')
-
   const token = getToken()
   const headers: Record<string, string> = {}
   if (token) headers['Authorization'] = `Bearer ${token}`
@@ -76,8 +89,4 @@ export async function uploadBlobFromDataUrl(dataUrl: string): Promise<string> {
 /** Uploaduje blob z File (z input[type=file]). */
 export async function uploadBlobFromFile(file: File): Promise<string> {
   const bytes = new Uint8Array(await file.arrayBuffer())
-  return uploadBlob(bytes, file.type || 'application/octet-stream', file.name)
-}
-
-// suppress unused - re-export uzywany przez inne moduly
-void request
+  return uploadBl
