@@ -48,6 +48,13 @@ export interface CharacterBook {
 /**
  * Karta postaci.
  * Pola z `description` do `character_version` odwzorowuja spec SillyTavern V2/V3.
+ *
+ * Portret:
+ *   - `portraitBlobId` (nowy format) - sha256 bloba na serwerze, uzywany przez
+ *     komponent Avatar (fetch przez /blobs/:sha z JWT).
+ *   - `portrait` (stary format) - base64 data URL inline. Zachowany dla
+ *     kompatybilnosci wstecz ze starymi kartami. Przy najblizszej edycji
+ *     karty konwertuje sie na blob.
  */
 export interface CharacterCard {
   id: string
@@ -71,6 +78,10 @@ export interface CharacterCard {
   role?: string
   status?: 'online' | 'away' | 'offline'
   summary?: string
+
+  /** Nowy format: sha256 bloba. Preferowany. */
+  portraitBlobId?: string | null
+  /** Stary format: base64 data URL. Deprecated, uzywany tylko przy odczycie. */
   portrait?: string
 
   /** Pelny oryginalny spec ST z importu. */
@@ -83,14 +94,19 @@ export interface CharacterCard {
 
 /**
  * Persona uzytkownika.
- * Imie i opis trafiaja do system promptu, zeby AI mialo punkt odniesienia.
- * Avatar sluzy wylacznie do wygladu w UI.
+ *
+ * Avatar: jak przy CharacterCard - `avatarBlobId` (nowy) lub `avatar` (stary base64).
  */
 export interface Persona {
   id: string
   name: string
   description?: string
+
+  /** Nowy format: sha256 bloba. Preferowany. */
+  avatarBlobId?: string | null
+  /** Stary format: base64 data URL. Deprecated. */
   avatar?: string
+
   /** Server-assigned metadane do optimistic lockingu. */
   _serverCreatedAt?: number
   _serverUpdatedAt?: number

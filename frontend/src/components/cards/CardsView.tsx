@@ -4,6 +4,7 @@ import type { CharacterCard } from '../../types'
 import { useI18n } from '../../i18n'
 import { parseSTJSON, cardFromSTSpec } from '../../lib/spec/st'
 import { extractPNGText } from '../../lib/png'
+import { uploadBlobFromDataUrl } from '../../services/sync'
 import Avatar from '../ui/Avatar'
 import CardEditor from './CardEditor'
 
@@ -23,6 +24,7 @@ export default function CardsView({ characters, onSave, onDelete, onStartChat }:
   const handleImport = async (file: File) => {
     try {
       let card: CharacterCard
+      let pendingPortraitDataUrl: string | undefined
 
       if (file.name.toLowerCase().endsWith('.png')) {
         const buffer = await file.arrayBuffer()
@@ -34,9 +36,10 @@ export default function CardsView({ characters, onSave, onDelete, onStartChat }:
         const spec = JSON.parse(decodeURIComponent(escape(atob(chara))))
         card = cardFromSTSpec(spec)
 
-        // Portret z tego samego pliku PNG
-        const reader = new FileReader()
-        card.portrait = await new Promise<string>((resolve) => {
+        // Portret z tego samego pliku PNG - zapamietujemy jako data URL,
+        // zaraz go wgramy jako blob i podmienimy na blobId.
+        pendingPortraitDataUrl = await new Promise<string>((resolve) => {
+          const reader = new FileReader()
           reader.onload = () => resolve(reader.result as string)
           reader.readAsDataURL(file)
         })
@@ -48,10 +51,23 @@ export default function CardsView({ characters, onSave, onDelete, onStartChat }:
         return
       }
 
+      // Jesli mamy portret z PNG - upload jako blob zamiast trzymac base64.
+      if (pendingPortraitDataUrl) {
+        try {
+          const blobId = await uploadBlobFromDataUrl(pendingPortraitDataUrl)
+          card.portraitBlobId = blobId
+          card.portrait = undefined
+        } catch (err) {
+          console.warn('Upload portretu nie powiodl sie, zostaje base64:', err)
+          // Fallback: zostawiamy base64 (dziala jak w poprzedniej wersji).
+          card.portrait = pendingPortraitDataUrl
+        }
+      }
+
       onSave(card)
       setEditing(card)
     } catch (error) {
-      console.error('Błąd importu karty:', error)
+      console.error('Blad importu karty:', error)
       alert(t('importError'))
     }
   }
@@ -85,6 +101,7 @@ export default function CardsView({ characters, onSave, onDelete, onStartChat }:
               status: 'offline',
               characterBook: { entries: [] },
               extensions: {},
+              portraitBlobId: null,
             })
           }
           className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-[12.5px] font-semibold text-white transition-colors hover:bg-accent-hover"
@@ -109,12 +126,11 @@ export default function CardsView({ characters, onSave, onDelete, onStartChat }:
             className="group flex cursor-pointer flex-col items-start gap-3 rounded-2xl border border-edge bg-surface p-4 text-left transition-colors hover:border-accent/50"
           >
             <div className="flex w-full items-center gap-3">
-              <Avatar src={card.portrait} name={card.name} size="lg" />
+              <Avatar src={card.portraitBlobId ?? card.portrait} name={card.name} size="lg" />
               <div className="min-w-0 flex-1">
                 <h3 className="truncate text-[14.5px] font-semibold text-[#f2f2f4]">{card.name}</h3>
                 <p className="truncate text-[12px] text-[#75757f]">{card.role ?? t('cardsNoRole')}</p>
               </div>
-              {/* Przycisk edycji — zatrzymuje propagację, żeby nie startować czatu */}
               <button
                 onClick={(e) => {
                   e.stopPropagation()

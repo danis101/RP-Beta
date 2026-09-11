@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { X, Plus, Trash2, Star } from 'lucide-react'
+import { X, Plus, Trash2, Star, Loader2 } from 'lucide-react'
 import type { Persona } from '../../types'
 import { useSettings } from '../../context/SettingsContext'
+import { uploadBlobFromFile } from '../../services/sync'
 import Avatar from '../ui/Avatar'
 
 interface PersonaManagerProps {
@@ -12,7 +13,7 @@ interface PersonaManagerProps {
   onClose: () => void
 }
 
-/** Menedżer person: lista, edycja, dodawanie, usuwanie, ustawianie domyślnej. */
+/** Menedzer person: lista, edycja, dodawanie, usuwanie, ustawianie domyslnej. */
 export default function PersonaManager({
   personas,
   activePersona,
@@ -24,7 +25,9 @@ export default function PersonaManager({
   const [editing, setEditing] = useState<Persona | null>(null)
   const [draftName, setDraftName] = useState('')
   const [draftDesc, setDraftDesc] = useState('')
-  const [draftAvatar, setDraftAvatar] = useState<string | undefined>(undefined)
+  const [draftAvatarBlobId, setDraftAvatarBlobId] = useState<string | undefined>(undefined)
+  const [draftAvatarLegacy, setDraftAvatarLegacy] = useState<string | undefined>(undefined)
+  const [uploadingAvatar, setUploadingAvatar] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -39,20 +42,31 @@ export default function PersonaManager({
     setEditing({ id: crypto.randomUUID(), name: '', description: '' })
     setDraftName('')
     setDraftDesc('')
-    setDraftAvatar(undefined)
+    setDraftAvatarBlobId(undefined)
+    setDraftAvatarLegacy(undefined)
   }
 
   const startEdit = (p: Persona) => {
     setEditing(p)
     setDraftName(p.name)
     setDraftDesc(p.description ?? '')
-    setDraftAvatar(p.avatar)
+    setDraftAvatarBlobId(p.avatarBlobId ?? undefined)
+    setDraftAvatarLegacy(p.avatar)
   }
 
-  const handleAvatar = (file: File) => {
-    const reader = new FileReader()
-    reader.onload = () => setDraftAvatar(reader.result as string)
-    reader.readAsDataURL(file)
+  /** Upload avatara persony jako blob. */
+  const handleAvatar = async (file: File) => {
+    setUploadingAvatar(true)
+    try {
+      const blobId = await uploadBlobFromFile(file)
+      setDraftAvatarBlobId(blobId)
+      setDraftAvatarLegacy(undefined) // nowy format wyklucza stary
+    } catch (err) {
+      console.error('Upload avatara nie powiodl sie:', err)
+      alert(err instanceof Error ? err.message : String(err))
+    } finally {
+      setUploadingAvatar(false)
+    }
   }
 
   const save = () => {
@@ -61,7 +75,8 @@ export default function PersonaManager({
       ...editing,
       name: draftName.trim(),
       description: draftDesc,
-      avatar: draftAvatar,
+      avatarBlobId: draftAvatarBlobId ?? null,
+      avatar: draftAvatarLegacy,
     })
     setEditing(null)
   }
@@ -69,6 +84,9 @@ export default function PersonaManager({
   const setDefault = (id: string) => {
     updateSettings({ defaultPersonaId: id })
   }
+
+  // Preferujemy blobId, fallback na stary base64.
+  const draftAvatarSrc = draftAvatarBlobId ?? draftAvatarLegacy
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
@@ -91,10 +109,13 @@ export default function PersonaManager({
             <div className="space-y-3 rounded-xl border border-edge bg-surface-light p-4">
               <button
                 onClick={() => fileRef.current?.click()}
-                className="mx-auto flex h-20 w-20 items-center justify-center overflow-hidden rounded-full border border-edge bg-surface-dark text-[#6a6a72] hover:border-accent"
+                disabled={uploadingAvatar}
+                className="mx-auto flex h-20 w-20 items-center justify-center overflow-hidden rounded-full border border-edge bg-surface-dark text-[#6a6a72] hover:border-accent disabled:opacity-60"
               >
-                {draftAvatar ? (
-                  <img src={draftAvatar} alt="" className="h-full w-full object-cover" />
+                {uploadingAvatar ? (
+                  <Loader2 size={18} className="animate-spin" />
+                ) : draftAvatarSrc ? (
+                  <Avatar src={draftAvatarSrc} name={draftName || '?'} size="lg" className="!h-20 !w-20 !rounded-full" />
                 ) : (
                   <span className="text-[10.5px]">Avatar</span>
                 )}
@@ -110,14 +131,14 @@ export default function PersonaManager({
               <input
                 value={draftName}
                 onChange={(e) => setDraftName(e.target.value)}
-                placeholder="Imię persony"
+                placeholder="Imie persony"
                 className="w-full rounded-lg border border-[#2a2a31] bg-surface-dark px-3 py-2 text-[13px] text-[#e8e8eb] outline-none focus:border-accent"
               />
               <textarea
                 value={draftDesc}
                 onChange={(e) => setDraftDesc(e.target.value)}
                 rows={4}
-                placeholder="Opis — osobowość, wygląd… (trafia do system promptu jako [Użytkownik])"
+                placeholder="Opis - osobowosc, wyglad... (trafia do system promptu jako [Uzytkownik])"
                 className="w-full resize-y rounded-lg border border-[#2a2a31] bg-surface-dark px-3 py-2 text-[13px] leading-relaxed text-[#e8e8eb] outline-none focus:border-accent"
               />
 
@@ -127,7 +148,7 @@ export default function PersonaManager({
                 </button>
                 <button
                   onClick={save}
-                  disabled={!draftName.trim()}
+                  disabled={!draftName.trim() || uploadingAvatar}
                   className="rounded-lg bg-accent px-3 py-1.5 text-[12.5px] font-semibold text-white hover:bg-accent-hover disabled:opacity-40"
                 >
                   Zapisz
@@ -147,7 +168,7 @@ export default function PersonaManager({
                     }`}
                   >
                     <button onClick={() => startEdit(p)} className="shrink-0">
-                      <Avatar src={p.avatar} name={p.name} size="md" />
+                      <Avatar src={p.avatarBlobId ?? p.avatar} name={p.name} size="md" />
                     </button>
                     <button onClick={() => startEdit(p)} className="min-w-0 flex-1 text-left">
                       <div className="truncate text-[13.5px] font-medium text-[#f2f2f4]">{p.name}</div>
@@ -158,7 +179,7 @@ export default function PersonaManager({
                     {isActive && <span className="text-[10.5px] font-semibold text-accent">aktywna</span>}
                     <button
                       onClick={() => setDefault(p.id)}
-                      title="Ustaw jako domyślną"
+                      title="Ustaw jako domyslna"
                       className={`rounded-lg p-1.5 ${
                         isDefault ? 'text-[#ffcc00]' : 'text-[#5a5f78] hover:text-white'
                       }`}

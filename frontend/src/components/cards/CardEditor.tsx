@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { X, Upload, Trash2, ImageDown, FileJson } from 'lucide-react'
+import { X, Upload, Trash2, ImageDown, FileJson, Loader2 } from 'lucide-react'
 import type { CharacterCard } from '../../types'
 import { useI18n } from '../../i18n'
+import { uploadBlobFromDataUrl, uploadBlobFromFile } from '../../services/sync'
 import { cardToJSON } from '../../lib/spec/st'
 import { dataURLToImageData, createPNGWithText } from '../../lib/png'
 import Avatar from '../ui/Avatar'
@@ -13,7 +14,7 @@ interface CardEditorProps {
   onClose: () => void
 }
 
-/** Edytor karty postaci — formularz pól ST + upload portretu + eksport. */
+/** Edytor karty postaci - formularz pol ST + upload portretu + eksport. */
 export default function CardEditor({ card, onSave, onDelete, onClose }: CardEditorProps) {
   const { t } = useI18n()
   const [draft, setDraft] = useState<CharacterCard>(() => {
@@ -33,9 +34,11 @@ export default function CardEditor({ card, onSave, onDelete, onClose }: CardEdit
       tags: [],
       characterBook: { entries: [] },
       extensions: {},
+      portraitBlobId: null,
     }
   })
 
+  const [uploadingPortrait, setUploadingPortrait] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -50,10 +53,22 @@ export default function CardEditor({ card, onSave, onDelete, onClose }: CardEdit
     setDraft((prev) => ({ ...prev, [key]: value }))
   }
 
-  const handlePortraitUpload = (file: File) => {
-    const reader = new FileReader()
-    reader.onload = () => set('portrait', reader.result as string)
-    reader.readAsDataURL(file)
+  /**
+   * Upload portretu: konwertuje plik na blob, wysyla na /blobs, zapisuje
+   * `portraitBlobId`. Stare `portrait` (base64) jest czyszczone - od teraz
+   * karta uzywa tylko bloba.
+   */
+  const handlePortraitUpload = async (file: File) => {
+    setUploadingPortrait(true)
+    try {
+      const blobId = await uploadBlobFromFile(file)
+      setDraft((prev) => ({ ...prev, portraitBlobId: blobId, portrait: undefined }))
+    } catch (err) {
+      console.error('Upload portretu nie powiodl sie:', err)
+      alert(err instanceof Error ? err.message : String(err))
+    } finally {
+      setUploadingPortrait(false)
+    }
   }
 
   const handleExportPNG = async () => {
@@ -69,7 +84,32 @@ export default function CardEditor({ card, onSave, onDelete, onClose }: CardEdit
         <text x="200" y="300" fill="#4d6bfe" font-family="sans-serif" font-size="28" text-anchor="middle">${draft.name || 'Karta postaci'}</text>
       </svg>
     `
-    const portraitURL = draft.portrait ?? `data:image/svg+xml;utf8,${encodeURIComponent(fallbackSvg)}`
+
+    // Zrodlo portretu do eksportu PNG: probujemy blobId -> data URL,
+    // fallback na stary base64, fallback na SVG placeholder.
+    let portraitURL: string
+    if (draft.portraitBlobId) {
+      try {
+        const { getBlobUrl } = await import('../../lib/blobCache')
+        const blobUrl = await getBlobUrl(draft.portraitBlobId)
+        // Konwertujemy blob URL z powrotem na data URL dla canvas.
+        const blob = await (await fetch(blobUrl)).blob()
+        portraitURL = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onload = () => resolve(reader.result as string)
+          reader.onerror = () => reject(reader.error)
+          reader.readAsDataURL(blob)
+        })
+      } catch (err) {
+        console.warn('Nie udalo sie pobrac portretu do eksportu:', err)
+        portraitURL = `data:image/svg+xml;utf8,${encodeURIComponent(fallbackSvg)}`
+      }
+    } else if (draft.portrait) {
+      portraitURL = draft.portrait
+    } else {
+      portraitURL = `data:image/svg+xml;utf8,${encodeURIComponent(fallbackSvg)}`
+    }
+
     const imageData = await dataURLToImageData(portraitURL)
     const blob = await createPNGWithText(imageData, 'chara', base64)
 
@@ -94,15 +134,17 @@ export default function CardEditor({ card, onSave, onDelete, onClose }: CardEdit
     onSave(draft)
   }
 
+  // Preferujemy portraitBlobId, fallback na stary portrait.
+  const avatarSrc = draft.portraitBlobId ?? draft.portrait
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
       <div
         className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-edge bg-surface"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Header */}
         <div className="flex items-center gap-3 border-b border-edge px-5 py-3.5">
-          <Avatar src={draft.portrait} name={draft.name || '?'} size="sm" />
+          <Avatar src={avatarSrc} name={draft.name || '?'} size="sm" />
           <h2 className="flex-1 text-[15px] font-semibold text-[#f2f2f4]">
             {card ? t('editorEditCard') : t('editorNewCard')}
           </h2>
@@ -117,16 +159,18 @@ export default function CardEditor({ card, onSave, onDelete, onClose }: CardEdit
           </button>
         </div>
 
-        {/* Body */}
         <div className="flex-1 space-y-3 overflow-y-auto px-5 py-4">
           <div className="flex gap-3">
             <button
               onClick={() => fileInputRef.current?.click()}
+              disabled={uploadingPortrait}
               title={t('fieldPortraitUpload')}
-              className="relative flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-edge bg-surface-dark text-[#6a6a72] transition-colors hover:border-accent"
+              className="relative flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-edge bg-surface-dark text-[#6a6a72] transition-colors hover:border-accent disabled:opacity-60"
             >
-              {draft.portrait ? (
-                <Avatar src={draft.portrait} name={draft.name} size="lg" />
+              {uploadingPortrait ? (
+                <Loader2 size={20} className="animate-spin" />
+              ) : avatarSrc ? (
+                <Avatar src={avatarSrc} name={draft.name} size="lg" />
               ) : (
                 <Upload size={20} />
               )}
@@ -159,7 +203,6 @@ export default function CardEditor({ card, onSave, onDelete, onClose }: CardEdit
           />
         </div>
 
-        {/* Footer */}
         <div className="flex items-center gap-2 border-t border-edge px-5 py-3">
           {card && (
             <button
@@ -175,7 +218,7 @@ export default function CardEditor({ card, onSave, onDelete, onClose }: CardEdit
           </button>
           <button
             onClick={handleSave}
-            disabled={!draft.name.trim()}
+            disabled={!draft.name.trim() || uploadingPortrait}
             className="rounded-lg bg-accent px-4 py-2 text-[12.5px] font-semibold text-white transition-colors hover:bg-accent-hover disabled:opacity-40"
           >
             {t('editorSave')}
@@ -222,3 +265,6 @@ function AreaField({
     </label>
   )
 }
+
+// suppress unused - import jest potrzebny dla future use i eslint
+void uploadBlobFromDataUrl

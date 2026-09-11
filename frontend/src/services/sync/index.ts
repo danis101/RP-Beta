@@ -8,10 +8,12 @@ import type { CharacterCard, Persona, Conversation, StylePreset, Lorebook } from
 export { request, login, logout, fetchMe, getToken, setToken, onUnauthorized, ConflictError } from './client'
 export { adminApi } from './admin'
 export { settingsApi, SETTINGS_WS_ID } from './settings'
+export { uploadBlob, uploadBlobFromDataUrl, uploadBlobFromFile } from './blobs'
 export { connectSyncWs, isRecentSelfSave, markSelfSave } from './ws'
 export type { SyncEvent, EntityType, EntityAction } from './ws'
 export type { AdminUser } from './admin'
 export type { ConflictPayload } from './types'
+export type { BlobUploadResult } from './blobs'
 
 /** Encje - instancje API per typ. */
 export const charactersApi = createEntityApi<CharacterCard>('/characters')
