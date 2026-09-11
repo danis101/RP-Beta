@@ -7,6 +7,8 @@ import type { CharacterCard, Persona, Conversation, StylePreset, Lorebook } from
 
 export { request, login, logout, fetchMe, getToken, setToken, onUnauthorized, ConflictError } from './client'
 export { adminApi } from './admin'
+export { connectSyncWs, isRecentSelfSave, markSelfSave } from './ws'
+export type { SyncEvent, EntityType, EntityAction } from './ws'
 export type { AdminUser } from './admin'
 export type { ConflictPayload } from './types'
 

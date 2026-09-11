@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CharacterCard, ChatMessage, Conversation, Persona, LongTermMemoryEntry, MessageAttachment, WebSearchResult, APIToolCall, ToolCall, StylePreset, Lorebook } from './types'
 import { MockAdapter, OpenAIAdapter, type ApiAdapter, type OpenAIMessage } from './services/api'
-import { charactersApi, personasApi, conversationsApi, stylesApi, lorebooksApi } from './services/sync'
+import { charactersApi, personasApi, conversationsApi, stylesApi, lorebooksApi, connectSyncWs, isRecentSelfSave } from './services/sync'
 import { ConflictError } from './services/sync/client'
 import { mergeConversations } from './lib/conversationMerge'
 import { buildSystemPrompt } from './lib/prompt'
@@ -79,9 +79,12 @@ export default function App() {
   const [toolRunning, setToolRunning] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
 
-  // Ref na aktualna liste konwersacji - do optimistic lockingu w callbackach.
   const conversationsRef = useRef<Conversation[]>([])
   conversationsRef.current = conversations
+
+  // Ref na activeId - zeby WS handler nie mial stale closure.
+  const activeIdRef = useRef<string | null>(null)
+  activeIdRef.current = activeId
 
   const activeProfile = settings.aiProfiles.find((p) => p.id === settings.activeAiProfileId) ?? settings.aiProfiles[0]
 
@@ -132,8 +135,7 @@ export default function App() {
   }, [activeProfile])
 
   /**
-   * Wczytuje wszystkie encje z serwera. Uzywane przy pierwszym starcie
-   * i przy manualnym "Odswiez z serwera" w nav rail.
+   * Wczytuje wszystkie encje z serwera (uzywane przy manualnym refreshu).
    */
   const reloadAll = async (opts: { silent?: boolean } = {}): Promise<void> => {
     if (!opts.silent) setRefreshing(true)
@@ -150,7 +152,6 @@ export default function App() {
       setPersonas(pers)
       setStylePresets(styles)
       setLorebooks(lbs)
-      return
     } finally {
       if (!opts.silent) setRefreshing(false)
     }
@@ -191,7 +192,61 @@ export default function App() {
     }
   }, [])
 
-  /** Manualny refresh z nav rail - pokazuje spinner i dociaga wszystko. */
+  // --- WebSocket: live sync z innych urzadzen ---
+  useEffect(() => {
+    const cleanup = connectSyncWs((event) => {
+      // Filtr: pomijamy echo wlasnej zmiany (sam zapisalem, sam bym dostal event).
+      if (isRecentSelfSave(event.id)) return
+
+      if (event.entityType === 'conversation') {
+        if (event.action === 'deleted') {
+          // Ktos usunal konwersacje na innym urzadzeniu - usuwamy z listy.
+          setConversations((prev) => prev.filter((c) => c.id !== event.id))
+          if (activeIdRef.current === event.id) {
+            setActiveId((prev) => {
+              if (prev !== event.id) return prev
+              const remaining = conversationsRef.current.filter((c) => c.id !== event.id)
+              return remaining[0]?.id ?? null
+            })
+          }
+          return
+        }
+
+        // updated / created: refetch pojedynczej i zmerge'uj z lokalnym stanem.
+        void conversationsApi
+          .get(event.id)
+          .then((remote) => {
+            setConversations((prev) => {
+              const idx = prev.findIndex((c) => c.id === remote.id)
+              if (idx === -1) return [...prev, remote]
+              const merged = mergeConversations(prev[idx], remote)
+              const next = [...prev]
+              next[idx] = merged
+              return next
+            })
+          })
+          .catch(() => {
+            // 404 - usuniete, ale nie dostalismy delete eventu.
+            setConversations((prev) => prev.filter((c) => c.id !== event.id))
+          })
+        return
+      }
+
+      // Dla pozostalych typow - refetch listy (male, tanie, zadne "live editing").
+      if (event.entityType === 'character') {
+        void charactersApi.list().then(setCharacters).catch(() => {})
+      } else if (event.entityType === 'persona') {
+        void personasApi.list().then(setPersonas).catch(() => {})
+      } else if (event.entityType === 'style') {
+        void stylesApi.list().then(setStylePresets).catch(() => {})
+      } else if (event.entityType === 'lorebook') {
+        void lorebooksApi.list().then(setLorebooks).catch(() => {})
+      }
+    })
+
+    return cleanup
+  }, [])
+
   const handleManualRefresh = async () => {
     try {
       await reloadAll()
@@ -259,18 +314,8 @@ export default function App() {
     .filter((l): l is Lorebook => Boolean(l))
 
   /**
-   * Zapisuje konwersacje do serwera z optimistic lockingiem i AUTO-MERGE.
-   *
-   * Sukces (200): cicho aktualizujemy _serverUpdatedAt lokalnie.
-   *
-   * Konflikt (409): ktos zmodyfikowal konwersacje na innym urzadzeniu.
-   * Scalamy wiadomosci (nasze nowe + z serwera) i ponawiamy zapis RAZ.
-   * Nie ma utraty danych, nie ma bannera.
-   *
-   * Konflikt przy retry (409 drugi raz): bardzo rzadkie. Pokazujemy banner
-   * z Odswiez (wersja z serwera wygrywa).
-   *
-   * Usuniete na innym urzadzeniu (current=null): banner informacyjny.
+   * Zapisuje konwersacje do serwera z optimistic lockingiem i auto-merge.
+   * Szczegoly: patrz persistConversationInternal.
    */
   const persistConversation = (conversation: Conversation) => {
     void persistConversationInternal(conversation, false)
@@ -296,7 +341,6 @@ export default function App() {
       const remote = err.current as Conversation | null
 
       if (!remote) {
-        // Encja zostala usunieta na innym urzadzeniu.
         pushBanner({
           title: t('conflictDeletedTitle'),
           description: t('conflictDeletedDesc'),
@@ -308,8 +352,6 @@ export default function App() {
       }
 
       if (isRetry) {
-        // Retry tez sie nie powiodl - bardzo rzadkie (dwa konflikty pod rzad).
-        // Pokazujemy banner, wersja z serwera wygrywa.
         pushBanner({
           title: t('conflictChangedTitle'),
           description: t('conflictChangedDesc'),
@@ -320,8 +362,6 @@ export default function App() {
         return
       }
 
-      // Auto-merge: nasze nowe wiadomosci + historia z serwera.
-      // Zero utraty danych, cichy retry.
       const merged = mergeConversations(conversation, remote)
       setConversations((prev) => prev.map((c) => (c.id === merged.id ? merged : c)))
       await persistConversationInternal(merged, true)
