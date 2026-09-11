@@ -9,14 +9,11 @@
  *   Backend doklejaja do kazdej encji pole `_serverUpdatedAt` (server-assigned
  *   timestamp). Klient trzyma je w encji i wysyla z powrotem jako
  *   `_expectedUpdatedAt` przy PUT. Jesli na serwerze `updated_at` sie rozni,
- *   backend zwraca 409 z aktualna wersja - klient rzuca ConflictError
- *   z `current` w srodku.
- *
- *   Serwer doklejaja tez `_serverCreatedAt` (do sortowania / wyswietlania).
+ *   backend zwraca 409 z aktualna wersja - client.ts rzuca ConflictError<T>
+ *   z `current`. Warstwa wyzej (App.tsx) decyduje co z tym zrobic.
  */
 
 import { request, ConflictError } from './client'
-import type { ConflictPayload } from './types'
 
 interface ListResponse<T> {
   items: T[]
@@ -43,6 +40,17 @@ function withExpectedVersion<T extends { id: string }>(entity: T): Record<string
   return body
 }
 
+/**
+ * Rzutuje ogolny ConflictError<unknown> z client.ts na ConflictError<T>
+ * z typowana encja. Bez tego App.tsx musialby rzutowac recznie.
+ */
+function refineConflict<T>(err: unknown): never {
+  if (err instanceof ConflictError) {
+    throw new ConflictError<T>(err.current as T | null)
+  }
+  throw err
+}
+
 export function createEntityApi<T extends { id: string }>(path: string): EntityApi<T> {
   return {
     async list() {
@@ -60,13 +68,9 @@ export function createEntityApi<T extends { id: string }>(path: string): EntityA
         })
       } catch (err) {
         // 409 Conflict - ktos zmodyfikowal encje na innym urzadzeniu.
-        // Rzucamy ConflictError z aktualna wersja z serwera w `current`,
-        // zeby warstwa UI mogla ja pokazac lub automatycznie przyjac.
-        if (err instanceof ConflictError) {
-          const payload = err.payload as ConflictPayload<T>
-          throw new ConflictError<T>(payload.current, path, entity.id)
-        }
-        throw err
+        // Rzucamy ConflictError<T> z typowana aktualna wersja, zeby warstwa
+        // wyzej mogla ja przyjac bez rzutowania.
+        refineConflict<T>(err)
       }
     },
     async remove(id) {

@@ -5,8 +5,9 @@
  * zadania jako `Authorization: Bearer`. Reaguje na 401 globalnie - czysci
  * token i powiadamia subskrybentow (AuthContext sie wylogowuje).
  *
- * 409 Conflict: rzuca ConflictError z payloadem z serwera. Warstwa wyzej
- * (entities.ts) opakowuje to w ConflictError z aktualna wersja encji.
+ * 409 Conflict: backend zwraca `{ error, conflict: true, current }`.
+ * Klient parsuje `current` i rzuca ConflictError z tym polem w srodku.
+ * Warstwa wyzej (App.tsx) decyduje co zrobic - najczesciej pokazac banner.
  */
 
 import { syncUrl } from './config'
@@ -39,16 +40,14 @@ export function setToken(token: string | null): void {
 // --- Blad konfliktu (409) ---
 
 /**
- * Rzucany gdy serwer zwroci 409. `payload` zawiera `current` - aktualna
- * wersje encji z serwera. Warstwa encji (entities.ts) rzuca dalej
- * ConflictError z typowanym `current` dla konkretnego typu encji.
+ * Rzucany gdy serwer zwroci 409. `current` zawiera aktualna wersje encji
+ * z serwera (albo null jesli zostala usunieta w miedzyczasie).
+ *
+ * Generyczny typ T pozwala warstwie wyzej (App.tsx) dostac typowana encje
+ * bez rzutowania: `catch (e) { if (e instanceof ConflictError) e.current }`
  */
 export class ConflictError<T = unknown> extends Error {
-  constructor(
-    public current: T | null,
-    public path: string,
-    public id: string,
-  ) {
+  constructor(public current: T | null) {
     super('Konflikt: encja zostala zmieniona na innym urzadzeniu')
     this.name = 'ConflictError'
   }
@@ -114,14 +113,11 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
   }
 
   if (resp.status === 409) {
-    // Backend zwrocil konflikt - parsujemy payload i rzucamy ConflictError.
-    // Warstwa encji (entities.ts) dokladnie wie co zrobic z `current`.
-    const payload = (await resp.json().catch(() => ({ error: 'Konflikt' }))) as Record<string, unknown>
-    const current = (payload as { current?: unknown }).current ?? null
-    const err = new ConflictError(current, path, '')
-    // Doklejamy surowy payload, zeby entities.ts mogl go przepakowac.
-    ;(err as ConflictError & { payload?: unknown }).payload = payload
-    throw err
+    // Backend zwrocil konflikt - parsujemy payload i rzucamy ConflictError
+    // z aktualna wersja encji w `current`. Typ T na tym poziomie jest
+    // "unknown" - warstwa wyzej (entities.ts) rzutuje to na konkretny typ.
+    const payload = (await resp.json().catch(() => ({}))) as { current?: unknown }
+    throw new ConflictError(payload.current ?? null)
   }
 
   if (!resp.ok) {
