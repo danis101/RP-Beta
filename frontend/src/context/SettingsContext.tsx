@@ -1,17 +1,28 @@
-import { createContext, useContext, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { FormattingPatterns, FormattingColors } from '../lib/formatting'
 import { defaultPatterns, defaultColors } from '../lib/formatting'
 import type { ApiProfile } from '../types'
+import { settingsApi } from '../services/sync'
+import { useI18n } from '../i18n'
 
 /**
- * Ustawienia aplikacji (poza encjami).
+ * Ustawienia aplikacji.
  *
- * Uwaga: stylePresets i lorebooks WYPROWADZONE z tego kontekstu w Etapie 2 —
- * te są teraz encjami na serwerze (przez stylesApi/lorebooksApi w App.tsx).
+ * Zrodlo prawdy: serwer (/settings). localStorage zostaje jako cache
+ * (przyspiesza start i unika "mrugania" domyslnymi wartosciami zanim
+ * przyjdzie odpowiedz z serwera).
  *
- * Po Etapie 2 (Settings przez API) ten plik zostanie przepisany.
- * Teraz: dane device-specific (AI profile, formatting, prompty) zostają
- * w localStorage, bo są specyficzne dla urządzenia / nie zsynchronizowane.
+ * Cykl zycia:
+ *   1. Mount: probuje wczytac z localStorage (natychmiast, bez czekania)
+ *   2. Rownolegle: fetch z serwera
+ *      - sukces: podmienia stan (serwer > localStorage)
+ *      - brak settings na serwerze (pierwszy login po aktualizacji):
+ *        wgrywa lokalne/defaults na serwer
+ *   3. Zmiany: setState lokalnie + PUT do serwera w tle (optimistic)
+ *   4. WS event 'settings.changed' z innego urzadzenia: refetch
+ *
+ * Loading state: dopoki nie ma ani localStorage ani serwera - pokazuje
+ * spinner. Zwykle trwa <100ms (localStorage natychmiast, serwer szybko).
  */
 
 export interface AppSettings {
@@ -44,12 +55,15 @@ export interface AppSettings {
 
 interface SettingsContextType {
   settings: AppSettings
+  loading: boolean
   updateSettings: (partial: Partial<AppSettings>) => void
   updateAiProfile: (profile: ApiProfile) => void
   addAiProfile: (profile: ApiProfile) => void
   deleteAiProfile: (id: string) => void
   setActiveAiProfile: (id: string) => void
   setDefaultStyle: (id: string) => void
+  /** Reczne dociagniecie z serwera (uzywane przez WS listener w App). */
+  refreshFromServer: () => Promise<void>
 }
 
 const SETTINGS_KEY = 'rp-settings'
@@ -72,72 +86,20 @@ function defaultAiProfile(): ApiProfile {
 }
 
 function defaultSummarizerPrompt(): string {
-  return `Jesteś asystentem podsumowującym historię rozmowy. Otrzymujesz dotychczasowe podsumowanie oraz nowe wiadomości. Twoim zadaniem jest zaktualizować podsumowanie, dodając najważniejsze wydarzenia, decyzje, fakty i zmiany w relacjach między postaciami. Zachowaj zwięzłość (max 200 słów) i trzymaj się faktów. Nie dodawaj własnych komentarzy ani ocen.`
+  return `Jestes asystentem podsumowujacym historie rozmowy. Otrzymujesz dotychczasowe podsumowanie oraz nowe wiadomosci. Twoim zadaniem jest zaktualizowac podsumowanie, dodajac najwazniejsze wydarzenia, decyzje, fakty i zmiany w relacjach miedzy postaciami. Zachowaj zwiezlosc (max 200 slow) i trzymaj sie faktow. Nie dodawaj wlasnych komentarzy ani ocen.`
 }
 
 function defaultImageGenRefinerPrompt(): string {
-  return `Jesteś ekspertem od promptów do generowania obrazów. Otrzymujesz kartę postaci (JSON) oraz fragment rozmowy. Twoim zadaniem jest napisać JEDEN spójny, szczegółowy pozytywny prompt do modelu tekst-do-obrazu, opisujący postać dokładnie tak, jak wygląda w karcie (twarz, sylwetka, włosy, oczy, strój, cechy charakterystyczne) oraz bieżącą scenę z rozmowy.
+  return `Jestes ekspertem od promptow do generowania obrazow. Otrzymujesz karte postaci (JSON) oraz fragment rozmowy. Twoim zadaniem jest napisac JEDEN spojny, szczegolowy pozytywny prompt do modelu tekst-do-obrazu, opisujacy postac dokladnie tak, jak wyglada w karcie (twarz, sylwetka, wlosy, oczy, stroj, cechy charakterystyczne) oraz biezaca scene z rozmowy.
 
-Zwróć WYŁĄCZNIE sam prompt, bez komentarzy. Rozpocznij go od tagu stylu, np.:
+Zwroc WYLACZNIE sam prompt, bez komentarzy. Rozpocznij go od tagu stylu, np.:
 [STYLE: Photorealistic] ...opis...
 
-Jeśli potrzebujesz, możesz dodać [FORMAT: portrait|landscape|square]. Nie dodawaj nic poza promptem.`
+Jesli potrzebujesz, mozesz dodac [FORMAT: portrait|landscape|square]. Nie dodawaj nic poza promptem.`
 }
 
-function loadSettings(): AppSettings {
-  const raw = localStorage.getItem(SETTINGS_KEY)
-  if (raw) {
-    try {
-      const parsed = JSON.parse(raw) as Partial<AppSettings> & {
-        baseUrl?: string
-        apiKey?: string
-        model?: string
-        temperature?: number
-      }
-
-      let aiProfiles: ApiProfile[] = parsed.aiProfiles ?? []
-      if ((!aiProfiles || aiProfiles.length === 0) && parsed.baseUrl) {
-        const migrated = defaultAiProfile()
-        migrated.baseUrl = parsed.baseUrl ?? ''
-        migrated.apiKey = parsed.apiKey ?? ''
-        migrated.model = parsed.model ?? ''
-        if (parsed.temperature !== undefined) migrated.sampler.temperature = parsed.temperature
-        aiProfiles = [migrated]
-      }
-
-      return {
-        formatting: parsed.formatting ?? defaultPatterns,
-        formattingColors: parsed.formattingColors ?? defaultColors,
-        defaultPersonaId: parsed.defaultPersonaId ?? '',
-        aiProfiles,
-        activeAiProfileId: parsed.activeAiProfileId ?? aiProfiles[0]?.id ?? '',
-        hideThinking: parsed.hideThinking ?? false,
-        defaultStyleId: parsed.defaultStyleId ?? '',
-        summarizerEnabled: parsed.summarizerEnabled ?? false,
-        summarizerModel: parsed.summarizerModel ?? '',
-        summarizerPrompt: parsed.summarizerPrompt ?? defaultSummarizerPrompt(),
-        summarizerMessageCount: parsed.summarizerMessageCount ?? 30,
-        summarizerThreshold: parsed.summarizerThreshold ?? 10,
-        webSearchEnabled: parsed.webSearchEnabled ?? false,
-        webSearchEngine: parsed.webSearchEngine ?? 'searxng',
-        webSearchUrl: parsed.webSearchUrl ?? 'http://192.168.100.80:8080',
-        webSearchApiKey: parsed.webSearchApiKey ?? '',
-        webSearchMaxResults: parsed.webSearchMaxResults ?? 5,
-        webSearchShowResults: parsed.webSearchShowResults ?? true,
-        webSearchCooldown: parsed.webSearchCooldown ?? 2,
-        imageGenEnabled: parsed.imageGenEnabled ?? false,
-        imageGenBaseUrl: parsed.imageGenBaseUrl ?? '',
-        imageGenResponseFormat: parsed.imageGenResponseFormat ?? 'url',
-        imageGenRefinerProfileId: parsed.imageGenRefinerProfileId ?? '',
-        imageGenRefinerPrompt: parsed.imageGenRefinerPrompt ?? defaultImageGenRefinerPrompt(),
-        imageGenContextMessages: parsed.imageGenContextMessages ?? 6,
-      }
-    } catch (e) {
-      console.warn('Błąd parsowania ustawień, używam domyślnych:', e)
-      localStorage.removeItem(SETTINGS_KEY)
-    }
-  }
-
+/** Defaults dla nowego usera (swiezo po loginie, brak settings na serwerze). */
+function defaultSettings(): AppSettings {
   const initial = defaultAiProfile()
   return {
     formatting: defaultPatterns,
@@ -168,54 +130,193 @@ function loadSettings(): AppSettings {
   }
 }
 
+/**
+ * Wczytuje z localStorage. Mozliwe ze to stare dane z poprzednich wersji
+ * (przed Etapem 2 - mialy stylePresets/lorebooks). Te pola sa ignorowane
+ * (nie ma ich w AppSettings), a brakujace uzupelniamy defaults.
+ */
+function loadFromLocalStorage(): AppSettings | null {
+  const raw = localStorage.getItem(SETTINGS_KEY)
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as Partial<AppSettings> & {
+      baseUrl?: string
+      apiKey?: string
+      model?: string
+      temperature?: number
+    }
+
+    const defaults = defaultSettings()
+
+    let aiProfiles: ApiProfile[] = parsed.aiProfiles ?? []
+    if ((!aiProfiles || aiProfiles.length === 0) && parsed.baseUrl) {
+      const migrated = defaultAiProfile()
+      migrated.baseUrl = parsed.baseUrl ?? ''
+      migrated.apiKey = parsed.apiKey ?? ''
+      migrated.model = parsed.model ?? ''
+      if (parsed.temperature !== undefined) migrated.sampler.temperature = parsed.temperature
+      aiProfiles = [migrated]
+    }
+
+    return {
+      ...defaults,
+      ...parsed,
+      formatting: parsed.formatting ?? defaults.formatting,
+      formattingColors: parsed.formattingColors ?? defaults.formattingColors,
+      aiProfiles: aiProfiles.length > 0 ? aiProfiles : defaults.aiProfiles,
+      activeAiProfileId: parsed.activeAiProfileId ?? aiProfiles[0]?.id ?? defaults.activeAiProfileId,
+    }
+  } catch (e) {
+    console.warn('Blad parsowania ustawien z localStorage:', e)
+    localStorage.removeItem(SETTINGS_KEY)
+    return null
+  }
+}
+
 const SettingsContext = createContext<SettingsContextType | null>(null)
 
 export function SettingsProvider({ children }: { children: ReactNode }) {
-  const [settings, setSettings] = useState<AppSettings>(loadSettings)
+  const { t } = useI18n()
 
-  const persist = (next: AppSettings) => {
+  // Inicjalizacja: localStorage (jesli jest) albo defaults.
+  // Stan poczatkowy jest natychmiastowy - brak mrugania.
+  const [settings, setSettings] = useState<AppSettings>(() => loadFromLocalStorage() ?? defaultSettings())
+  const [loading, setLoading] = useState(true)
+
+  // Ref na najswiezsze settings - do unikania stale closure w debounced save.
+  const settingsRef = useRef(settings)
+  settingsRef.current = settings
+
+  // Debounce timera PUT (zmiany szybkie - np. suwak - nie zapisujemy kazdej).
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const persistLocal = (next: AppSettings): AppSettings => {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(next))
     return next
   }
 
+  /** Zapisz na serwer z debounce 500ms (chroni przed spamem przy suwakach). */
+  const scheduleSave = (): void => {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+    saveTimerRef.current = setTimeout(() => {
+      void settingsApi.save(settingsRef.current).catch((err) => {
+        console.warn('Zapis ustawien na serwer nie powiodl sie:', err)
+      })
+    }, 500)
+  }
+
+  // Przy mount: fetch z serwera.
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const remote = await settingsApi.get()
+        if (cancelled) return
+
+        if (remote) {
+          // Serwer ma settings - uzywamy ich (zrodlo prawdy).
+          setSettings(persistLocal(remote))
+        } else {
+          // Serwer nie ma - wgrywamy to co mamy lokalnie (migracja).
+          await settingsApi.save(settingsRef.current)
+        }
+      } catch (err) {
+        // Blad sieci - zostajemy z localStorage, sprobujemy pozniej.
+        console.warn('Nie udalo sie pobrac ustawien z serwera:', err)
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  /** Reczne dociagniecie z serwera (wywolywane przez WS listener w App). */
+  const refreshFromServer = async (): Promise<void> => {
+    try {
+      const remote = await settingsApi.get()
+      if (remote) {
+        setSettings(persistLocal(remote))
+      }
+    } catch (err) {
+      console.warn('Refresh ustawien z serwera nie powiodl sie:', err)
+    }
+  }
+
   const updateSettings = (partial: Partial<AppSettings>) => {
-    setSettings((prev) => persist({ ...prev, ...partial }))
+    setSettings((prev) => {
+      const next = persistLocal({ ...prev, ...partial })
+      scheduleSave()
+      return next
+    })
   }
 
   const updateAiProfile = (profile: ApiProfile) => {
-    setSettings((prev) => persist({ ...prev, aiProfiles: prev.aiProfiles.map((p) => (p.id === profile.id ? profile : p)) }))
+    setSettings((prev) => {
+      const next = persistLocal({
+        ...prev,
+        aiProfiles: prev.aiProfiles.map((p) => (p.id === profile.id ? profile : p)),
+      })
+      scheduleSave()
+      return next
+    })
   }
 
   const addAiProfile = (profile: ApiProfile) => {
-    setSettings((prev) => persist({ ...prev, aiProfiles: [...prev.aiProfiles, profile] }))
+    setSettings((prev) => {
+      const next = persistLocal({ ...prev, aiProfiles: [...prev.aiProfiles, profile] })
+      scheduleSave()
+      return next
+    })
   }
 
   const deleteAiProfile = (id: string) => {
     setSettings((prev) => {
       const profiles = prev.aiProfiles.filter((p) => p.id !== id)
       const activeId = prev.activeAiProfileId === id ? profiles[0]?.id ?? '' : prev.activeAiProfileId
-      return persist({ ...prev, aiProfiles: profiles, activeAiProfileId: activeId })
+      const next = persistLocal({ ...prev, aiProfiles: profiles, activeAiProfileId: activeId })
+      scheduleSave()
+      return next
     })
   }
 
   const setActiveAiProfile = (id: string) => {
-    setSettings((prev) => persist({ ...prev, activeAiProfileId: id }))
+    setSettings((prev) => {
+      const next = persistLocal({ ...prev, activeAiProfileId: id })
+      scheduleSave()
+      return next
+    })
   }
 
   const setDefaultStyle = (id: string) => {
-    setSettings((prev) => persist({ ...prev, defaultStyleId: id }))
+    setSettings((prev) => {
+      const next = persistLocal({ ...prev, defaultStyleId: id })
+      scheduleSave()
+      return next
+    })
+  }
+
+  if (loading) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-surface-dark text-[13px] text-[#75757f]">
+        {t('settingsLoading')}
+      </div>
+    )
   }
 
   return (
     <SettingsContext.Provider
       value={{
         settings,
+        loading,
         updateSettings,
         updateAiProfile,
         addAiProfile,
         deleteAiProfile,
         setActiveAiProfile,
         setDefaultStyle,
+        refreshFromServer,
       }}
     >
       {children}

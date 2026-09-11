@@ -1,26 +1,19 @@
 /**
  * Klient WebSocket do serwera RP Sync.
  *
- * Serwer (backend) przy kazdej zmianie encji broadcastuje event do
- * wszystkich sesji danego usera:
+ * Serwer broadcastuje eventy do wszystkich sesji danego usera:
  *   { type: 'entity.changed', entityType, action, id }
  *
- * Klient otwiera polaczenie po zalogowaniu, nasluchuje eventow i przekazuje
- * je do callbacku. Na rozlaczenie reconnectuje z exponential backoff
- * (1s, 2s, 4s, 8s, 16s, 30s max).
+ * Reconnect z exponential backoff (1s, 2s, 4s, 8s, 16s, 30s max).
  *
- * Self-save filter:
- *   Gdy sam zapisujesz encje, serwer tez wysyla event do ciebie (broadcast
- *   do wszystkich sesji usera, w tym do tej ktora zapisala). Zeby nie robic
- *   zbednego refetcha po kazdym wlasnym zapisie, markSelfSave(id) zapisuje
- *   timestamp, a isRecentSelfSave(id) sprawdza czy to nie echo wlasnej
- *   zmiany z ostatnich 3 sekund.
+ * Self-save filter: markSelfSave(id) zapisuje timestamp, isRecentSelfSave(id)
+ * sprawdza czy event nie jest echem wlasnego zapisu z ostatnich 3 sekund.
  */
 
 import { wsUrl } from './config'
 import { getToken } from './client'
 
-export type EntityType = 'character' | 'persona' | 'conversation' | 'style' | 'lorebook'
+export type EntityType = 'character' | 'persona' | 'conversation' | 'style' | 'lorebook' | 'settings'
 export type EntityAction = 'created' | 'updated' | 'deleted'
 
 export interface SyncEvent {
@@ -35,13 +28,8 @@ export interface SyncEvent {
 const SELF_SAVE_TTL_MS = 3000
 const selfSaves = new Map<string, number>()
 
-/**
- * Zaznacza ze wlasnie zapisalismy encje o danym id. Wywolywane z entities.ts
- * po sukcesie PUT. Filtr TTL 3s.
- */
 export function markSelfSave(id: string): void {
   selfSaves.set(id, Date.now())
-  // Okazjonalny cleanup - nie pozwalamy mapie rosnac w nieskonczonosc.
   if (selfSaves.size > 200) {
     const now = Date.now()
     for (const [k, t] of selfSaves) {
@@ -50,11 +38,6 @@ export function markSelfSave(id: string): void {
   }
 }
 
-/**
- * Sprawdza czy event dotyczy swiezego wlasnego zapisu (echo). Jesli tak,
- * warstwa wyzej powinna go zignorowac - nie ma sensu refetchowac tego
- * co wlasnie sami zapisalismy.
- */
 export function isRecentSelfSave(id: string): boolean {
   const t = selfSaves.get(id)
   if (!t) return false
@@ -82,13 +65,6 @@ function isSyncEvent(data: unknown): data is SyncEvent {
   )
 }
 
-/**
- * Otwiera polaczenie WebSocket do serwera sync. Zwraca funkcje zatrzymujaca
- * (cleanup), ktora zamyka polaczenie i wylacza reconnect.
- *
- * Reconnect dziala dopoki cleanup nie zostanie wywolany albo user sie nie
- * wyloguje (brak tokenu => retry co 1s az token sie pojawi).
- */
 export function connectSyncWs(onEvent: (event: SyncEvent) => void): () => void {
   let ws: WebSocket | null = null
   let closed = false
@@ -98,7 +74,6 @@ export function connectSyncWs(onEvent: (event: SyncEvent) => void): () => void {
   const scheduleReconnect = (): void => {
     if (closed) return
     attempt++
-    // 1s, 2s, 4s, 8s, 16s, 30s, 30s...
     const delay = Math.min(30_000, 1000 * Math.pow(2, Math.min(attempt - 1, 5)))
     reconnectTimer = setTimeout(open, delay)
   }
@@ -108,7 +83,6 @@ export function connectSyncWs(onEvent: (event: SyncEvent) => void): () => void {
 
     const token = getToken()
     if (!token) {
-      // Brak tokenu - user prawdopodobnie wylogowany. Sprobuj za chwile.
       reconnectTimer = setTimeout(open, 1000)
       return
     }
@@ -132,7 +106,6 @@ export function connectSyncWs(onEvent: (event: SyncEvent) => void): () => void {
         return
       }
 
-      // Serwer wysyla powitalny { type: 'hello' } - ignorujemy.
       if (parsed && typeof parsed === 'object' && (parsed as HelloMessage).type === 'hello') {
         return
       }
@@ -153,7 +126,7 @@ export function connectSyncWs(onEvent: (event: SyncEvent) => void): () => void {
     }
 
     ws.onerror = () => {
-      // onclose odpali sie zaraz po tym i tak - nie duplikujemy logiki.
+      /* onclose i tak odpali */
     }
   }
 

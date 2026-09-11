@@ -1,20 +1,22 @@
 /**
- * Hub WebSocket — broadcast zdarzeń o zmianach encji do wszystkich sesji
- * danego użytkownika.
+ * Hub WebSocket - broadcast zdarzen o zmianach encji do wszystkich sesji
+ * danego uzytkownika.
  *
- * Zdarzenia nie niosą treści encji — tylko sygnał "coś się zmieniło".
- * Klient na tej podstawie refetchuje. Dzięki temu payload jest mały,
- * a klient sam decyduje co chce trzymać w pamięci.
+ * Zdarzenia nie niosa tresci encji - tylko sygnal "cos sie zmienilo".
+ * Klient na tej podstawie refetchuje. Dzieki temu payload jest maly,
+ * a klient sam decyduje co chce trzymac w pamieci.
  *
- * Bloby nie są broadcastowane — są immutable i content-addressed,
- * klient dowiaduje się o nich dopiero gdy zobaczy blobId w encji.
+ * Bloby nie sa broadcastowane - sa immutable i content-addressed,
+ * klient dowiaduje sie o nich dopiero gdy zobaczy blobId w encji.
+ *
+ * entityType 'settings' to singleton ustawien aplikacji (patrz routes/settings.ts).
  */
 
 import type { WSContext } from 'hono/ws'
 
 export interface EntityChangedEvent {
   type: 'entity.changed'
-  entityType: 'character' | 'persona' | 'conversation' | 'style' | 'lorebook'
+  entityType: 'character' | 'persona' | 'conversation' | 'style' | 'lorebook' | 'settings'
   action: 'created' | 'updated' | 'deleted'
   id: string
 }
@@ -46,12 +48,12 @@ export function broadcast(userId: string, event: EntityChangedEvent): void {
     try {
       ws.send(payload)
     } catch {
-      // martwe połączenie — zostanie sprzątnięte przez onClose
+      // martwe polaczenie - zostanie sprzatniete przez onClose
     }
   }
 }
 
-/** Diagnostyka — ile aktywnych sesji na usera (do /health). */
+/** Diagnostyka - ile aktywnych sesji na usera (do /health). */
 export function connectionStats(): { users: number; connections: number } {
   let total = 0
   for (const set of connections.values()) total += set.size

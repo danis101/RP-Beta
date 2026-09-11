@@ -13,6 +13,7 @@
   "authLogout": "Wyloguj",
   "authConnecting": "Laczenie z serwerem...",
   "authHint": "Nie masz konta? Popros administratora o jego utworzenie.",
+  "settingsLoading": "Ladowanie ustawien...",
   "syncLoadError": "Nie udalo sie wczytac danych z serwera.",
   "syncRetry": "Sprobuj ponownie",
   "conflictChangedTitle": "Zmienione na innym urzadzeniu",

@@ -13,6 +13,7 @@
   "authLogout": "Sign out",
   "authConnecting": "Connecting to server...",
   "authHint": "No account? Ask an administrator to create one for you.",
+  "settingsLoading": "Loading settings...",
   "syncLoadError": "Failed to load data from the server.",
   "syncRetry": "Try again",
   "conflictChangedTitle": "Changed on another device",
