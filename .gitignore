@@ -1,0 +1,17 @@
+# Dane runtime (baza + bloby) — nie wrzucamy na GitHuba
+data/
+
+# Konfiguracja lokalna z sekretami
+.env
+
+# Node
+node_modules/
+dist/
+*.log
+
+# Bun
+bun.lockb
+
+# OS
+.DS_Store
+Thumbs.db

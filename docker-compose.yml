@@ -1,0 +1,30 @@
+services:
+  rp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: rp:latest
+    container_name: rp
+    ports:
+      # Zmień "8787:8787" na "TWOJ_PORT:8787" jeśli chcesz inny port na hoście
+      - "8787:8787"
+    volumes:
+      # Baza danych + bloby trwale na dysku hosta
+      - ./data:/data
+    environment:
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET jest wymagany w .env lub środowisku}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD jest wymagany}
+      DATA_DIR: /data
+      NODE_ENV: production
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - bun
+        - -e
+        - "fetch('http://localhost:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

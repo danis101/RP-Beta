@@ -1,0 +1,34 @@
+# Docker ignore - nie kopiujemy tego do kontekstu buildu.
+#
+# Bez tego pliku `COPY frontend/ ./` w Dockerfile kopiuje node_modules
+# z hosta (np. Windowsa), nadpisujac poprawnie zainstalowane zaleznosci
+# w obrazie. Pliki .bin/ z Windowsa nie maja bitu +x dla Linuxa, wiec
+# `tsc` i inne binarki rzucaja "Permission denied".
+
+# Zaleznosci (instalowane wewnatrz obrazu przez npm/bun install)
+**/node_modules
+**/bun.lockb
+**/package-lock.json
+
+# Zbudowane statyki frontendu (budowane wewnatrz obrazu)
+frontend/dist
+
+# Dane runtime i sekrety
+data/
+.env
+
+# Git i inne smieci
+.git
+.gitignore
+**/.DS_Store
+**/Thumbs.db
+
+# Logi
+**/*.log
+
+# Backend: stare pliki z etapu gdy rp-sync byl osobnym stackiem
+sync/Dockerfile
+sync/docker-compose.yml
+sync/README.md
+sync/.env.example
+sync/.gitignore

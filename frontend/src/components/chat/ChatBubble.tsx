@@ -1,0 +1,192 @@
+import { useState } from 'react'
+import { Globe, ChevronDown, ExternalLink, Search, AlertCircle, Loader2, ImageOff } from 'lucide-react'
+import type { ChatMessage } from '../../types'
+import { getSelectedVariant } from '../../lib/messages'
+import { renderFormattedText } from '../../lib/FormattedText'
+import { substituteTokens, type TokenContext } from '../../lib/tokens'
+import { useSettings } from '../../context/SettingsContext'
+import ImageLightbox from './ImageLightbox'
+
+interface ChatBubbleProps {
+  message: ChatMessage
+  tokens?: TokenContext
+}
+
+export default function ChatBubble({ message, tokens }: ChatBubbleProps) {
+  const { settings } = useSettings()
+  const isUser = message.role === 'user'
+  const variant = getSelectedVariant(message)
+  const [thinkingOpen, setThinkingOpen] = useState(false)
+  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
+  const [resultsOpen, setResultsOpen] = useState(false)
+  const [imageFailed, setImageFailed] = useState(false)
+
+  const rawContent = tokens ? substituteTokens(variant.content, tokens) : variant.content
+  const thinking = variant.thinking
+  const showThinking = !settings.hideThinking && !!thinking && !isUser
+  const attachments = variant.attachments ?? []
+  const toolCall = variant.toolCall
+
+  const showResults = settings.webSearchShowResults ?? true
+
+  const openLightbox = (src: string) => setLightboxSrc(src)
+
+  return (
+    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+      <div className="max-w-[90%] min-w-0 space-y-1.5">
+        {/* Thinking section */}
+        {showThinking && (
+          <div className="overflow-hidden rounded-xl border border-[#252a3d] bg-surface">
+            <button
+              onClick={() => setThinkingOpen((prev) => !prev)}
+              className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-[11.5px] font-medium text-[#8a94b8] transition-colors hover:bg-surface-light"
+            >
+              <ChevronDown size={12} className={`shrink-0 transition-transform ${thinkingOpen ? 'rotate-180' : ''}`} />
+              thinking
+            </button>
+            {thinkingOpen && (
+              <div className="border-t border-[#252a3d] px-3 py-2 text-[12px] leading-relaxed text-[#8a8a94]">
+                {thinking}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Message content */}
+        {rawContent && (
+          <div
+            className={`whitespace-pre-wrap break-words px-3.5 py-2.5 text-[13.5px] leading-relaxed ${
+              isUser
+                ? 'rounded-2xl rounded-br-md bg-accent text-white'
+                : 'rounded-2xl rounded-bl-md border border-edge bg-surface-light text-[#e8e8eb]'
+            }`}
+          >
+            {isUser
+              ? rawContent
+              : renderFormattedText(
+                  rawContent,
+                  settings.formatting,
+                  settings.formattingColors,
+                  openLightbox,
+                )}
+          </div>
+        )}
+
+        {/* Tool call - websearch */}
+        {toolCall?.type === 'websearch' && toolCall.results && toolCall.results.length > 0 && (
+          showResults ? (
+            <div className="overflow-hidden rounded-xl border border-[#252a3d] bg-surface">
+              <button
+                onClick={() => setResultsOpen((prev) => !prev)}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] font-medium text-[#8a94b8] transition-colors hover:bg-surface-light"
+              >
+                <Search size={14} className="shrink-0 text-accent" />
+                <span className="flex-1">Websearch: {toolCall.label}</span>
+                <span className="text-[10.5px] text-[#6a6a72]">{toolCall.results.length} wynikow</span>
+                <ChevronDown size={12} className={`shrink-0 transition-transform ${resultsOpen ? 'rotate-180' : ''}`} />
+              </button>
+              {resultsOpen && (
+                <div className="border-t border-[#252a3d] p-3 space-y-2 max-h-60 overflow-y-auto">
+                  {toolCall.results.map((result, idx) => (
+                    <div key={idx} className="rounded-lg border border-edge bg-surface-light p-2.5 hover:bg-surface">
+                      <a
+                        href={result.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-start gap-2 text-[12.5px] text-accent hover:underline"
+                      >
+                        <span className="flex-1 font-medium">{result.title}</span>
+                        <ExternalLink size={12} className="shrink-0 mt-0.5" />
+                      </a>
+                      <p className="mt-0.5 text-[11.5px] text-[#9a9aa3]">{result.snippet}</p>
+                      <p className="mt-0.5 text-[10.5px] text-[#6a6a72]">{result.source}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 rounded-xl border border-dashed border-[#252a3d] bg-surface px-3 py-2 text-xs text-[#8a94b8]">
+              <Search size={14} className="shrink-0 text-accent" />
+              <span>Websearch: {toolCall.label}</span>
+              <span className="text-[10.5px] text-[#6a6a72]">{toolCall.results.length} wynikow</span>
+            </div>
+          )
+        )}
+
+        {/* Tool call - image */}
+        {toolCall?.type === 'image' && (
+          <div className="mt-1">
+            {toolCall.status === 'error' ? (
+              <div className="flex items-center gap-2 rounded-xl border border-dashed border-[#3a2a2a] bg-[#1a1212] px-3 py-2 text-xs text-[#e05b5b]">
+                <AlertCircle size={14} className="shrink-0" />
+                <span>{toolCall.error || 'Blad generowania obrazu.'}</span>
+              </div>
+            ) : toolCall.imageUrl ? (
+              imageFailed ? (
+                // Nie udalo sie zaladowac obrazu (np. mixed content blokuje HTTP URL).
+                // Pokazujemy czytelny komunikat + klikalny link do oryginalu.
+                <div className="flex max-w-[280px] items-start gap-2 rounded-lg border border-[#3a2a2a] bg-[#1a1212] px-3 py-2 text-[11.5px] text-[#e05b5b]">
+                  <ImageOff size={14} className="mt-0.5 shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium">Nie mozna wyswietlic obrazu</div>
+                    <div className="mt-0.5 text-[11px] text-[#b88a8a]">
+                      Prawdopodobnie mixed content (HTTP obraz na HTTPS stronie).
+                    </div>
+                    <a
+                      href={toolCall.imageUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-1 inline-flex items-center gap-1 text-[11px] text-accent hover:underline"
+                    >
+                      Otworz w nowej karcie
+                      <ExternalLink size={10} />
+                    </a>
+                  </div>
+                </div>
+              ) : (
+                <img
+                  src={toolCall.imageUrl}
+                  alt={toolCall.label}
+                  onError={() => {
+                    console.warn('[ChatBubble] obraz nie zaladowal sie:', toolCall.imageUrl)
+                    setImageFailed(true)
+                  }}
+                  className="max-h-[280px] max-w-[280px] cursor-zoom-in rounded-lg border border-edge object-cover transition-opacity hover:opacity-90"
+                  onClick={() => openLightbox(toolCall.imageUrl!)}
+                />
+              )
+            ) : (
+              <div className="flex items-center gap-2 rounded-xl border border-dashed border-[#252a3d] bg-surface px-3 py-2 text-xs text-[#8a94b8]">
+                <Loader2 size={14} className="shrink-0 animate-spin text-accent" />
+                <span>{toolCall.status === 'generating' ? 'Generowanie obrazu...' : toolCall.label}</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Attachments */}
+        {attachments.map((att, idx) => (
+          <div key={idx} className="mt-1">
+            <img
+              src={att.data}
+              alt={att.name || 'obraz'}
+              className="max-h-[280px] max-w-[280px] cursor-zoom-in rounded-lg border border-edge object-cover transition-opacity hover:opacity-90"
+              onClick={() => openLightbox(att.data)}
+            />
+          </div>
+        ))}
+
+        {/* Fallback tool call */}
+        {toolCall && toolCall.type !== 'websearch' && toolCall.type !== 'image' && (
+          <div className="flex items-center gap-2 rounded-xl border border-dashed border-[#2c2c3a] bg-[#14151c] px-3 py-2 text-xs text-[#9a9aa8]">
+            <Globe size={14} className="shrink-0" />
+            <span>{toolCall.label}</span>
+          </div>
+        )}
+      </div>
+
+      {lightboxSrc && <ImageLightbox src={lightboxSrc} onClose={() => setLightboxSrc(null)} />}
+    </div>
+  )
+}
