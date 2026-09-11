@@ -16,9 +16,18 @@ interface ChatBubbleProps {
 /**
  * Pojedyncza wiadomosc w czacie.
  *
+ * Uklad: dwie warstwy flex.
+ *   1. Row na pelna szerokosc (justify-end dla usera, justify-start dla asystenta)
+ *   2. Column z max-w i items-end/items-start — kazde dziecko dopasowuje sie
+ *      do wlasnej zawartosci i jest wyrownane do wlasciwej strony.
+ *
+ * Kluczowe: BEZ `min-w-0` na wewnetrznym wrapperze. `min-w-0` pozwalal
+ * flexowi zwezac bubble ponizej naturalnej szerokosci tekstu, przez co nawet
+ * krotkie wiadomosci ("kontynuacja jasne") lamaly sie na dwie linie.
+ *
  * Tool call image:
  *   - GDY jest tekst (postac cos pisze + generuje obraz) -> obrazek w dymku,
- *     zaraz pod tekstem - wizualnie czesc odpowiedzi postaci.
+ *     zaraz pod tekstem — wizualnie czesc odpowiedzi postaci.
  *   - GDY nie ma tekstu (rozdzka - user sam generuje) -> obrazek pod dymkiem,
  *     samodzielny element bez tla.
  */
@@ -47,10 +56,10 @@ export default function ChatBubble({ message, tokens }: ChatBubbleProps) {
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div className="max-w-[90%] min-w-0 space-y-1.5">
+      <div className={`flex max-w-[85%] flex-col gap-1.5 ${isUser ? 'items-end' : 'items-start'}`}>
         {/* Thinking section */}
         {showThinking && (
-          <div className="overflow-hidden rounded-xl border border-[#252a3d] bg-surface">
+          <div className="w-full overflow-hidden rounded-xl border border-[#252a3d] bg-surface">
             <button
               onClick={() => setThinkingOpen((prev) => !prev)}
               className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-[11.5px] font-medium text-[#8a94b8] transition-colors hover:bg-surface-light"
@@ -67,9 +76,9 @@ export default function ChatBubble({ message, tokens }: ChatBubbleProps) {
         )}
 
         {/* Message content + obrazek w dymku (gdy jest tekst) */}
-        {(rawContent || (imageTool && rawContent !== undefined && imageTool.status === 'generating' && isUser === false)) && rawContent ? (
+        {(rawContent || (imageTool && imageTool.status === 'generating' && !isUser)) && rawContent ? (
           <div
-            className={`whitespace-pre-wrap break-words px-3.5 py-2.5 text-[13.5px] leading-relaxed ${
+            className={`w-fit whitespace-pre-wrap break-words px-3.5 py-2.5 text-[13.5px] leading-relaxed ${
               isUser
                 ? 'rounded-2xl rounded-br-md bg-accent text-white'
                 : 'rounded-2xl rounded-bl-md border border-edge bg-surface-light text-[#e8e8eb]'
@@ -97,21 +106,19 @@ export default function ChatBubble({ message, tokens }: ChatBubbleProps) {
 
         {/* Sam obrazek (bez tekstu) - poza dymkiem */}
         {!rawContent && imageTool && (
-          <div className="mt-1">
-            <ImageStandalone
-              toolCall={imageTool}
-              imageSrc={imageSrc}
-              imageFailed={imageFailed}
-              onImageError={() => setImageFailed(true)}
-              onImageClick={openLightbox}
-            />
-          </div>
+          <ImageStandalone
+            toolCall={imageTool}
+            imageSrc={imageSrc}
+            imageFailed={imageFailed}
+            onImageError={() => setImageFailed(true)}
+            onImageClick={openLightbox}
+          />
         )}
 
         {/* Tool call - websearch */}
         {toolCall?.type === 'websearch' && toolCall.results && toolCall.results.length > 0 && (
           showResults ? (
-            <div className="overflow-hidden rounded-xl border border-[#252a3d] bg-surface">
+            <div className="w-full overflow-hidden rounded-xl border border-[#252a3d] bg-surface">
               <button
                 onClick={() => setResultsOpen((prev) => !prev)}
                 className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] font-medium text-[#8a94b8] transition-colors hover:bg-surface-light"
@@ -294,15 +301,12 @@ function AttachmentImage({
   const src = useBlobSrc(blobId ?? legacyData)
   if (!src) return null
   return (
-    <div className="mt-1">
-      <img
-        src={src}
-        alt={name || 'obraz'}
-        className="max-h-[280px] max-w-[280px] cursor-zoom-in rounded-lg border border-edge object-cover transition-opacity hover:opacity-90"
-        onClick={() => onImageClick(src)}
-      />
-    </div>
+    <img
+      src={src}
+      alt={name || 'obraz'}
+      className="max-h-[280px] max-w-[280px] cursor-zoom-in rounded-lg border border-edge object-cover transition-opacity hover:opacity-90"
+      onClick={() => onImageClick(src)}
+    />
   )
 }
 
-// === END OF FILE ===
