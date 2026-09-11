@@ -1,7 +1,30 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { CharacterCard, ChatMessage, Conversation, Persona, LongTermMemoryEntry, MessageAttachment, MessageVariant, WebSearchResult, APIToolCall, ToolCall, StylePreset, Lorebook } from './types'
+import type {
+  CharacterCard,
+  ChatMessage,
+  Conversation,
+  Persona,
+  LongTermMemoryEntry,
+  MessageAttachment,
+  MessageVariant,
+  WebSearchResult,
+  APIToolCall,
+  ToolCall,
+  StylePreset,
+  Lorebook,
+} from './types'
 import { MockAdapter, OpenAIAdapter, type ApiAdapter, type OpenAIMessage } from './services/api'
-import { charactersApi, personasApi, conversationsApi, stylesApi, lorebooksApi, connectSyncWs, isRecentSelfSave, SETTINGS_WS_ID, uploadBlobFromBlob } from './services/sync'
+import {
+  charactersApi,
+  personasApi,
+  conversationsApi,
+  stylesApi,
+  lorebooksApi,
+  connectSyncWs,
+  isRecentSelfSave,
+  SETTINGS_WS_ID,
+  uploadBlobFromBlob,
+} from './services/sync'
 import { ConflictError } from './services/sync/client'
 import { getBlobAsDataUrl } from './lib/blobCache'
 import { mergeConversations } from './lib/conversationMerge'
@@ -61,6 +84,7 @@ export default function App() {
   const { user } = useAuth()
   const { pushBanner } = useConflict()
   const route = useHashRoute()
+
   const [view, setView] = useState<AppView>('chat')
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [ready, setReady] = useState(false)
@@ -90,7 +114,8 @@ export default function App() {
   const activeIdRef = useRef<string | null>(null)
   activeIdRef.current = activeId
 
-  const activeProfile = settings.aiProfiles.find((p) => p.id === settings.activeAiProfileId) ?? settings.aiProfiles[0]
+  const activeProfile =
+    settings.aiProfiles.find((p) => p.id === settings.activeAiProfileId) ?? settings.aiProfiles[0]
 
   const adapter: ApiAdapter = useMemo(() => {
     if (activeProfile?.baseUrl.trim()) {
@@ -302,9 +327,9 @@ export default function App() {
 
   const defaultPersona = personas.find((p) => p.id === settings.defaultPersonaId) ?? personas[0]
   const activePersona: Persona | undefined = activeConversation
-    ? (activeConversation.personaId
-        ? personas.find((p) => p.id === activeConversation.personaId) ?? defaultPersona
-        : defaultPersona)
+    ? activeConversation.personaId
+      ? personas.find((p) => p.id === activeConversation.personaId) ?? defaultPersona
+      : defaultPersona
     : defaultPersona
 
   const activeStyleId = activeConversation?.styleId ?? settings.defaultStyleId
@@ -318,13 +343,20 @@ export default function App() {
     void persistConversationInternal(conversation, false)
   }
 
-  const persistConversationInternal = async (conversation: Conversation, isRetry: boolean): Promise<void> => {
+  const persistConversationInternal = async (
+    conversation: Conversation,
+    isRetry: boolean,
+  ): Promise<void> => {
     try {
       const saved = await conversationsApi.update(conversation)
       setConversations((prev) =>
         prev.map((c) =>
           c.id === saved.id
-            ? { ...c, _serverUpdatedAt: saved._serverUpdatedAt, _serverCreatedAt: saved._serverCreatedAt }
+            ? {
+                ...c,
+                _serverUpdatedAt: saved._serverUpdatedAt,
+                _serverCreatedAt: saved._serverCreatedAt,
+              }
             : c,
         ),
       )
@@ -527,7 +559,18 @@ export default function App() {
           onToolCalls: (calls) => {
             toolCalls = calls
           },
-          onDone: () => finishCompletion(accumulated, thinking, toolCalls, targetMessageId, mode, history, extraMessages, toolResults, toolLabel),
+          onDone: () =>
+            finishCompletion(
+              accumulated,
+              thinking,
+              toolCalls,
+              targetMessageId,
+              mode,
+              history,
+              extraMessages,
+              toolResults,
+              toolLabel,
+            ),
           onError: (error) => handleCompletionError(error),
         },
       )
@@ -550,7 +593,17 @@ export default function App() {
         } catch {
           accumulated = result
         }
-        finishCompletion(accumulated, thinking, toolCalls, targetMessageId, mode, history, extraMessages, toolResults, toolLabel)
+        finishCompletion(
+          accumulated,
+          thinking,
+          toolCalls,
+          targetMessageId,
+          mode,
+          history,
+          extraMessages,
+          toolResults,
+          toolLabel,
+        )
       } catch (error) {
         handleCompletionError(error instanceof Error ? error : new Error(String(error)))
       }
@@ -625,7 +678,9 @@ export default function App() {
         }
       } catch (error) {
         console.error('Tool execution error:', error)
-        finalContent = accumulated + `\n\nBlad wykonania narzedzia: ${error instanceof Error ? error.message : String(error)}`
+        finalContent =
+          accumulated +
+          `\n\nBlad wykonania narzedzia: ${error instanceof Error ? error.message : String(error)}`
       } finally {
         setToolRunning(false)
       }
@@ -695,13 +750,13 @@ export default function App() {
 
     const finalTool: ToolCall | undefined = imageToolCall
       ? imageToolCall
-      : (existingToolResults && showResults)
+      : existingToolResults && showResults
         ? {
             type: 'websearch' as const,
             label: existingToolLabel || 'Wyszukiwanie',
             results: existingToolResults,
           }
-        : (toolResults && showResults && !extraMessages)
+        : toolResults && showResults && !extraMessages
           ? {
               type: 'websearch' as const,
               label: toolLabel || 'Wyszukiwanie',
@@ -857,7 +912,11 @@ export default function App() {
   }
 
   /** Aktualizuje konkretny wariant (patch). Uzywane przy regeneracji obrazu. */
-  const updateVariantAt = (messageId: string, variantIndex: number, patch: Partial<MessageVariant>) => {
+  const updateVariantAt = (
+    messageId: string,
+    variantIndex: number,
+    patch: Partial<MessageVariant>,
+  ) => {
     setConversations((prev) =>
       prev.map((c) => {
         if (c.id !== activeId) return c
@@ -1033,7 +1092,10 @@ export default function App() {
     setConversations((prev) =>
       prev.map((c) => {
         if (c.id !== activeId) return c
-        const updated: Conversation = { ...c, messages: c.messages.filter((m) => m.id !== messageId) }
+        const updated: Conversation = {
+          ...c,
+          messages: c.messages.filter((m) => m.id !== messageId),
+        }
         persistConversation(updated)
         return updated
       }),
@@ -1288,9 +1350,10 @@ export default function App() {
       const count = settings.summarizerMessageCount ?? 30
       const limited = messagesToSummarize.slice(-count)
 
-      const existingSummary = conv.longTermMemory.length > 0
-        ? conv.longTermMemory[conv.longTermMemory.length - 1].content
-        : undefined
+      const existingSummary =
+        conv.longTermMemory.length > 0
+          ? conv.longTermMemory[conv.longTermMemory.length - 1].content
+          : undefined
 
       const summary = await generateSummary(
         limited,
@@ -1362,7 +1425,13 @@ export default function App() {
 
     const addTemp = (messages: ChatMessage[]): ChatMessage[] => [
       ...messages,
-      { id: tempId, role: 'assistant' as const, variants: [tempVariant], selectedVariant: 0, timestamp: Date.now() },
+      {
+        id: tempId,
+        role: 'assistant' as const,
+        variants: [tempVariant],
+        selectedVariant: 0,
+        timestamp: Date.now(),
+      },
     ]
 
     setConversations((prev) =>
@@ -1443,7 +1512,9 @@ export default function App() {
         prev.map((c) => {
           if (c.id !== activeId) return c
           const messages = c.messages.map((m) =>
-            m.id === tempId ? { ...m, variants: [{ ...m.variants[0], toolCall: errorToolCall }] } : m,
+            m.id === tempId
+              ? { ...m, variants: [{ ...m.variants[0], toolCall: errorToolCall }] }
+              : m,
           )
           const updated: Conversation = { ...c, messages }
           persistConversation(updated)
@@ -1551,9 +1622,12 @@ export default function App() {
               onSwipeNext={handleSwipeNext}
               onSwipePrev={handleSwipePrev}
               showSummary={!hiddenSummaries.has(activeConversation.id)}
-              summaryText={activeConversation.longTermMemory.length > 0
-                ? activeConversation.longTermMemory[activeConversation.longTermMemory.length - 1].content
-                : undefined}
+              summaryText={
+                activeConversation.longTermMemory.length > 0
+                  ? activeConversation.longTermMemory[activeConversation.longTermMemory.length - 1]
+                      .content
+                  : undefined
+              }
               onCloseSummary={() =>
                 setHiddenSummaries((prev) => new Set(prev).add(activeConversation.id))
               }
@@ -1625,18 +1699,3 @@ export default function App() {
     </div>
   )
 }
-
-// === END OF FILE ===
-
-```
-
-Podmień `frontend/src/App.tsx`. Push, pull, `docker compose up -d --build`.
-
-**Co jest w tym pliku (wszystkie 4 zmiany już wklejone):**
-
-1. `handlePickImageStyle` — obok `handlePickStyle` (linia ~530)
-2. `imageStyleDirective: activeConversation?.imageStyleId` w `toolCtx` (finishCompletion)
-3. `imageStyleDirective: activeConversation.imageStyleId` w `handleGenerateImage` → `refineImagePrompt`
-4. `<ChatView>` — dodane `availableImageStyles`, `activeImageStyleId`, `onPickImageStyle`
-
-Już nie trzeba nic dopisywać ręcznie. Jeden paste, build przejdzie.
