@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { X, Plus, Trash2, Star, Loader2 } from 'lucide-react'
+import { X, Plus, Trash2, Loader2, Pencil, Check } from 'lucide-react'
 import type { Persona } from '../../types'
 import { useSettings } from '../../context/SettingsContext'
 import { uploadBlobFromFile } from '../../services/sync'
@@ -7,13 +7,28 @@ import Avatar from '../ui/Avatar'
 
 interface PersonaManagerProps {
   personas: Persona[]
+  /** Persona aktywnej konwersacji (moze byc inna niz domyslna). */
   activePersona: Persona
   onSave: (persona: Persona) => void
   onDelete: (id: string) => void
   onClose: () => void
 }
 
-/** Menedzer person: lista, edycja, dodawanie, usuwanie, ustawianie domyslnej. */
+/**
+ * Manager person.
+ *
+ * Workflow (kazdy element ma jedna, jasna role):
+ *   - klik w wiersz     -> ustaw jako DOMYSLNA (badge + podswietlenie)
+ *   - olowek (zawsze widoczny) -> edycja imienia/opisu/avatara
+ *   - kosz (przy hover)  -> usun
+ *   - plus w naglowku    -> nowa persona
+ *
+ * Wiersze moga miec dwa niezalezne wskazniki:
+ *   - "domyslna" (zolta gwiazdka przy nazwie) -> persona dla NOWYCH konwersacji
+ *   - "aktywna" (niebieski napis)             -> persona uzywana w OTWARTEJ konwersacji
+ * W typowym uzyciu oba sa takie same. Roznia sie gdy user zmienil
+ * persone w konkretnej konwersacji przez menu (⋮ -> Persona).
+ */
 export default function PersonaManager({
   personas,
   activePersona,
@@ -54,13 +69,12 @@ export default function PersonaManager({
     setDraftAvatarLegacy(p.avatar)
   }
 
-  /** Upload avatara persony jako blob. */
   const handleAvatar = async (file: File) => {
     setUploadingAvatar(true)
     try {
       const blobId = await uploadBlobFromFile(file)
       setDraftAvatarBlobId(blobId)
-      setDraftAvatarLegacy(undefined) // nowy format wyklucza stary
+      setDraftAvatarLegacy(undefined)
     } catch (err) {
       console.error('Upload avatara nie powiodl sie:', err)
       alert(err instanceof Error ? err.message : String(err))
@@ -81,11 +95,11 @@ export default function PersonaManager({
     setEditing(null)
   }
 
-  const setDefault = (id: string) => {
-    updateSettings({ defaultPersonaId: id })
+  /** Klik w wiersz - ustaw jako domyslna. */
+  const handleRowClick = (p: Persona) => {
+    updateSettings({ defaultPersonaId: p.id })
   }
 
-  // Preferujemy blobId, fallback na stary base64.
   const draftAvatarSrc = draftAvatarBlobId ?? draftAvatarLegacy
 
   return (
@@ -96,7 +110,7 @@ export default function PersonaManager({
       >
         <div className="flex items-center gap-2 border-b border-edge px-4 py-3">
           <h2 className="flex-1 text-[15px] font-semibold text-[#f2f2f4]">Persony</h2>
-          <button onClick={startNew} className="rounded-lg p-2 text-[#8a8a94] hover:bg-surface-light hover:text-white">
+          <button onClick={startNew} className="rounded-lg p-2 text-[#8a8a94] hover:bg-surface-light hover:text-white" title="Nowa persona">
             <Plus size={16} />
           </button>
           <button onClick={onClose} className="rounded-lg p-2 text-[#8a8a94] hover:bg-surface-light hover:text-white">
@@ -110,6 +124,7 @@ export default function PersonaManager({
               <button
                 onClick={() => fileRef.current?.click()}
                 disabled={uploadingAvatar}
+                title="Kliknij aby zmienic avatar"
                 className="mx-auto flex h-20 w-20 items-center justify-center overflow-hidden rounded-full border border-edge bg-surface-dark text-[#6a6a72] hover:border-accent disabled:opacity-60"
               >
                 {uploadingAvatar ? (
@@ -132,6 +147,7 @@ export default function PersonaManager({
                 value={draftName}
                 onChange={(e) => setDraftName(e.target.value)}
                 placeholder="Imie persony"
+                autoFocus
                 className="w-full rounded-lg border border-[#2a2a31] bg-surface-dark px-3 py-2 text-[13px] text-[#e8e8eb] outline-none focus:border-accent"
               />
               <textarea
@@ -149,8 +165,9 @@ export default function PersonaManager({
                 <button
                   onClick={save}
                   disabled={!draftName.trim() || uploadingAvatar}
-                  className="rounded-lg bg-accent px-3 py-1.5 text-[12.5px] font-semibold text-white hover:bg-accent-hover disabled:opacity-40"
+                  className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-[12.5px] font-semibold text-white hover:bg-accent-hover disabled:opacity-40"
                 >
+                  <Check size={13} />
                   Zapisz
                 </button>
               </div>
@@ -158,38 +175,70 @@ export default function PersonaManager({
           ) : (
             <div className="space-y-1">
               {personas.map((p) => {
-                const isActive = p.id === activePersona.id
+                const isActiveInConversation = p.id === activePersona.id
                 const isDefault = settings.defaultPersonaId === p.id
+                const avatarSrc = p.avatarBlobId ?? p.avatar
+
                 return (
                   <div
                     key={p.id}
-                    className={`flex items-center gap-3 rounded-xl px-3 py-2.5 transition-colors ${
-                      isActive ? 'bg-[#1e2436]' : 'hover:bg-surface-light'
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => handleRowClick(p)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        handleRowClick(p)
+                      }
+                    }}
+                    title={isDefault ? 'Domyslna persona' : 'Kliknij, aby ustawic jako domyslna'}
+                    className={`group flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 transition-colors ${
+                      isDefault
+                        ? 'bg-[#1e2436] ring-1 ring-inset ring-accent/40'
+                        : 'hover:bg-surface-light'
                     }`}
                   >
-                    <button onClick={() => startEdit(p)} className="shrink-0">
-                      <Avatar src={p.avatarBlobId ?? p.avatar} name={p.name} size="md" />
-                    </button>
-                    <button onClick={() => startEdit(p)} className="min-w-0 flex-1 text-left">
-                      <div className="truncate text-[13.5px] font-medium text-[#f2f2f4]">{p.name}</div>
+                    <div className="shrink-0">
+                      <Avatar src={avatarSrc} name={p.name} size="md" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-[13.5px] font-medium text-[#f2f2f4]">{p.name}</span>
+                        {isDefault && (
+                          <span className="shrink-0 text-[10.5px] font-semibold uppercase tracking-wide text-[#ffcc00]">
+                            domyslna
+                          </span>
+                        )}
+                        {isActiveInConversation && !isDefault && (
+                          <span className="shrink-0 text-[10.5px] font-semibold uppercase tracking-wide text-accent">
+                            aktywna
+                          </span>
+                        )}
+                      </div>
                       <div className="truncate text-[11.5px] text-[#75757f]">
                         {p.description?.slice(0, 50) || 'Brak opisu'}
                       </div>
-                    </button>
-                    {isActive && <span className="text-[10.5px] font-semibold text-accent">aktywna</span>}
+                    </div>
+                    {/* Olowek - zawsze widoczny, jedyna sciezka do edycji. */}
                     <button
-                      onClick={() => setDefault(p.id)}
-                      title="Ustaw jako domyslna"
-                      className={`rounded-lg p-1.5 ${
-                        isDefault ? 'text-[#ffcc00]' : 'text-[#5a5f78] hover:text-white'
-                      }`}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        startEdit(p)
+                      }}
+                      title="Edytuj"
+                      className="shrink-0 rounded-lg p-1.5 text-[#8a8a94] transition-colors hover:bg-surface hover:text-white"
                     >
-                      <Star size={14} fill={isDefault ? 'currentColor' : 'none'} />
+                      <Pencil size={14} />
                     </button>
+                    {/* Kosz - przy hover, zeby nie zasmiecal. */}
                     {personas.length > 1 && (
                       <button
-                        onClick={() => onDelete(p.id)}
-                        className="rounded-lg p-1.5 text-[#5a5f78] hover:text-[#e05b5b]"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onDelete(p.id)
+                        }}
+                        title="Usun"
+                        className="shrink-0 rounded-lg p-1.5 text-[#5a5f78] opacity-0 transition-opacity hover:bg-[#2a1a1a] hover:text-[#e05b5b] group-hover:opacity-100"
                       >
                         <Trash2 size={14} />
                       </button>
