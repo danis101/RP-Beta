@@ -149,3 +149,19 @@ export function logout(): void {
 export async function fetchMe(): Promise<SyncUser> {
   return request<SyncUser>('/auth/me')
 }
+
+/**
+ * Zmiana wlasnego hasla. Backend bumpuje session_version (inne sesje padaja),
+ * ale zwraca nowy token z nowym `sv` — podmieniamy go lokalnie, zeby biezaca
+ * sesja pozostala zalogowana.
+ */
+export async function changeMyPassword(currentPassword: string, newPassword: string): Promise<void> {
+  const resp = await request<{ ok: boolean; token: string }>('/auth/change-password', {
+    method: 'POST',
+    body: { currentPassword, newPassword },
+  })
+  if (resp.token) {
+    setToken(resp.token)
+  }
+}
+

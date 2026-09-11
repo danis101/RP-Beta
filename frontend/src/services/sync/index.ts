@@ -5,7 +5,7 @@
 import { createEntityApi } from './entities'
 import type { CharacterCard, Persona, Conversation, StylePreset, Lorebook } from '../../types'
 
-export { request, login, logout, fetchMe, getToken, setToken, onUnauthorized, ConflictError } from './client'
+export { request, login, logout, fetchMe, getToken, setToken, onUnauthorized, ConflictError, changeMyPassword } from './client'
 export { adminApi } from './admin'
 export { settingsApi, SETTINGS_WS_ID } from './settings'
 export { uploadBlob, uploadBlobFromDataUrl, uploadBlobFromFile, uploadBlobFromBlob } from './blobs'
@@ -21,3 +21,4 @@ export const personasApi = createEntityApi<Persona>('/personas')
 export const conversationsApi = createEntityApi<Conversation>('/conversations')
 export const stylesApi = createEntityApi<StylePreset>('/styles')
 export const lorebooksApi = createEntityApi<Lorebook>('/lorebooks')
+

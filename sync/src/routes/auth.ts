@@ -7,7 +7,8 @@
  * Login ma rate limit (LOGIN_RATE_LIMIT / LOGIN_RATE_WINDOW_MS per IP).
  *
  * Sesje: token zawiera `sv` (session_version z chwili logowania). Zmiana hasła
- * bumpuje `sv` — unieważnia wszystkie istniejące tokeny tego usera.
+ * bumpuje `sv` — unieważnia wszystkie INNE sesje tego usera. Bieżąca sesja
+ * dostaje nowy token z nowym `sv` (nie wylogowuje usera, jak GitHub).
  */
 
 import { Hono } from 'hono'
@@ -101,8 +102,15 @@ authRoutes.get('/me', authMiddleware, (c) => {
 
 /**
  * Zmiana własnego hasła. Wymaga podania starego hasła.
- * Po zmianie bumpuje session_version — wszystkie istniejące sesje (w tym
- * bieżąca) przestają działać, trzeba zalogować się ponownie.
+ *
+ * Zachowanie sesji:
+ *   - `session_version` jest bumpowane — WSZYSTKIE istniejące tokeny
+ *     (na innych urządzeniach) padają.
+ *   - W ODPOWIEDZI zwracamy nowy token z nowym `sv` — bieżąca sesja
+ *     pozostaje zalogowana (frontend podmienia token w localStorage).
+ *
+ * To standard UX (GitHub, Google): zmieniasz hasło, twój telefon zostaje
+ * wylogowany, ale ta przeglądarka nie.
  */
 authRoutes.post('/change-password', authMiddleware, async (c) => {
   const userId = c.get('userId')
@@ -133,6 +141,13 @@ authRoutes.post('/change-password', authMiddleware, async (c) => {
   db.run('UPDATE users SET password_hash = ? WHERE id = ?', [hash, userId])
   bumpUserSessionVersion(userId)
 
-  return c.json({ ok: true })
+  // Świeży session_version po bumpie — do nowego tokenu.
+  const updated = db
+    .query('SELECT session_version FROM users WHERE id = ?')
+    .get(userId) as { session_version: number }
+
+  const newToken = await createToken(userId, user.username, updated.session_version)
+
+  return c.json({ ok: true, token: newToken })
 })
 

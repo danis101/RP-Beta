@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Plus, Trash2, ShieldCheck, Loader2, X } from 'lucide-react'
+import { Plus, Trash2, ShieldCheck, Loader2, X, KeyRound, CheckCircle2 } from 'lucide-react'
 import { useI18n } from '../../i18n'
 import { useAuth } from '../../context/AuthContext'
 import { adminApi, type AdminUser } from '../../services/sync'
@@ -7,6 +7,10 @@ import { adminApi, type AdminUser } from '../../services/sync'
 /**
  * Panel administratora — zarządzanie kontami.
  * Widoczny tylko dla usera z isAdmin=true (sprawdzane w AuthContext + przy wejściu).
+ *
+ * Akcje per user:
+ *   - zmiana hasła (bump session_version → user wylogowany na wszystkich urządzeniach)
+ *   - usunięcie konta (twarde + zamknięcie WS)
  */
 export default function AdminPanel() {
   const { t } = useI18n()
@@ -22,6 +26,13 @@ export default function AdminPanel() {
   const [newPassword, setNewPassword] = useState('')
   const [creating, setCreating] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
+
+  // Formularz zmiany hasła (inline pod wierszem usera)
+  const [passwordEditingId, setPasswordEditingId] = useState<string | null>(null)
+  const [passwordDraft, setPasswordDraft] = useState('')
+  const [passwordSubmitting, setPasswordSubmitting] = useState(false)
+  const [passwordError, setPasswordError] = useState<string | null>(null)
+  const [passwordSuccessId, setPasswordSuccessId] = useState<string | null>(null)
 
   const refresh = async () => {
     setLoading(true)
@@ -65,6 +76,45 @@ export default function AdminPanel() {
       setUsers((prev) => prev.filter((u) => u.id !== id))
     } catch (err) {
       alert(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const openPasswordEdit = (id: string) => {
+    setPasswordEditingId(id)
+    setPasswordDraft('')
+    setPasswordError(null)
+  }
+
+  const cancelPasswordEdit = () => {
+    setPasswordEditingId(null)
+    setPasswordDraft('')
+    setPasswordError(null)
+  }
+
+  const submitPasswordChange = async (target: AdminUser) => {
+    if (!passwordDraft || passwordSubmitting) return
+    if (passwordDraft.length < 8) {
+      setPasswordError(t('accountPasswordTooShort'))
+      return
+    }
+
+    if (!window.confirm(t('adminChangePasswordConfirm').replace('{name}', target.username))) {
+      return
+    }
+
+    setPasswordSubmitting(true)
+    setPasswordError(null)
+
+    try {
+      await adminApi.changeUserPassword(target.id, passwordDraft)
+      setPasswordEditingId(null)
+      setPasswordDraft('')
+      setPasswordSuccessId(target.id)
+      window.setTimeout(() => setPasswordSuccessId(null), 5000)
+    } catch (err) {
+      setPasswordError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setPasswordSubmitting(false)
     }
   }
 
@@ -187,43 +237,108 @@ export default function AdminPanel() {
           {!loading &&
             users.map((u) => {
               const isSelf = u.id === currentUser?.id
+              const editingPassword = passwordEditingId === u.id
+              const showingSuccess = passwordSuccessId === u.id
+
               return (
                 <div
                   key={u.id}
-                  className="flex items-center gap-3 rounded-xl border border-edge bg-surface px-4 py-3"
+                  className="rounded-xl border border-edge bg-surface"
                 >
-                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent/20 text-[13px] font-semibold uppercase text-accent">
-                    {u.username.charAt(0)}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="truncate text-[13.5px] font-medium text-[#f2f2f4]">
-                        {u.username}
+                  <div className="flex items-center gap-3 px-4 py-3">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent/20 text-[13px] font-semibold uppercase text-accent">
+                      {u.username.charAt(0)}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-[13.5px] font-medium text-[#f2f2f4]">
+                          {u.username}
+                        </span>
+                        {u.isAdmin && (
+                          <span className="flex items-center gap-1 rounded bg-[#1e2436] px-1.5 py-0.5 text-[10px] font-medium text-accent">
+                            <ShieldCheck size={10} />
+                            admin
+                          </span>
+                        )}
+                        {isSelf && (
+                          <span className="rounded bg-surface-light px-1.5 py-0.5 text-[10px] text-[#8a8a94]">
+                            {t('adminYou')}
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-0.5 text-[11px] text-[#5a5f78]">
+                        {t('adminCreatedAt')}: {formatDate(u.createdAt)}
+                      </div>
+                    </div>
+
+                    {showingSuccess && (
+                      <span className="flex items-center gap-1 rounded-lg bg-[#16241b] px-2 py-1 text-[11px] text-[#7ee2a0]">
+                        <CheckCircle2 size={12} />
+                        {t('adminPasswordChanged')}
                       </span>
-                      {u.isAdmin && (
-                        <span className="flex items-center gap-1 rounded bg-[#1e2436] px-1.5 py-0.5 text-[10px] font-medium text-accent">
-                          <ShieldCheck size={10} />
-                          admin
-                        </span>
-                      )}
-                      {isSelf && (
-                        <span className="rounded bg-surface-light px-1.5 py-0.5 text-[10px] text-[#8a8a94]">
-                          {t('adminYou')}
-                        </span>
-                      )}
-                    </div>
-                    <div className="mt-0.5 text-[11px] text-[#5a5f78]">
-                      {t('adminCreatedAt')}: {formatDate(u.createdAt)}
-                    </div>
-                  </div>
-                  {!isSelf && (
+                    )}
+
                     <button
-                      onClick={() => handleDelete(u.id, u.username)}
-                      title={t('adminDelete')}
-                      className="rounded-lg p-2 text-[#5a5f78] transition-colors hover:bg-[#2a1a1a] hover:text-[#e05b5b]"
+                      onClick={() => (editingPassword ? cancelPasswordEdit() : openPasswordEdit(u.id))}
+                      title={t('adminChangePassword')}
+                      className={`rounded-lg p-2 transition-colors ${
+                        editingPassword
+                          ? 'bg-surface-light text-white'
+                          : 'text-[#5a5f78] hover:bg-surface-light hover:text-accent'
+                      }`}
                     >
-                      <Trash2 size={14} />
+                      <KeyRound size={14} />
                     </button>
+
+                    {!isSelf && (
+                      <button
+                        onClick={() => handleDelete(u.id, u.username)}
+                        title={t('adminDelete')}
+                        className="rounded-lg p-2 text-[#5a5f78] transition-colors hover:bg-[#2a1a1a] hover:text-[#e05b5b]"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    )}
+                  </div>
+
+                  {editingPassword && (
+                    <div className="space-y-2 border-t border-edge px-4 py-3">
+                      <div className="text-[11.5px] text-[#8a8a94]">
+                        {t('adminChangePasswordFor').replace('{name}', u.username)}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={passwordDraft}
+                          onChange={(e) => setPasswordDraft(e.target.value)}
+                          placeholder={t('adminNewPasswordPlaceholder')}
+                          autoFocus
+                          className="flex-1 rounded-lg border border-[#2a2a31] bg-surface-dark px-3 py-2 text-[13px] text-[#e8e8eb] outline-none focus:border-accent"
+                        />
+                        <button
+                          onClick={() => submitPasswordChange(u)}
+                          disabled={passwordSubmitting || !passwordDraft}
+                          className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-[12.5px] font-semibold text-white transition-colors hover:bg-accent-hover disabled:opacity-40"
+                        >
+                          {passwordSubmitting && <Loader2 size={13} className="animate-spin" />}
+                          {t('adminChangePasswordButton')}
+                        </button>
+                        <button
+                          onClick={cancelPasswordEdit}
+                          className="rounded-lg p-2 text-[#8a8a94] hover:bg-surface-light hover:text-white"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                      {passwordError && (
+                        <p className="rounded-lg bg-[#2a1a1a] px-3 py-2 text-[12px] text-[#e05b5b]">
+                          {passwordError}
+                        </p>
+                      )}
+                      <p className="text-[11px] text-[#6a6a72]">
+                        {t('adminPasswordHint')}
+                      </p>
+                    </div>
                   )}
                 </div>
               )
@@ -233,3 +348,4 @@ export default function AdminPanel() {
     </main>
   )
 }
+

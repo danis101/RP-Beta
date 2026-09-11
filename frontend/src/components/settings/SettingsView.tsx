@@ -1,15 +1,16 @@
 import { useState } from 'react'
-import { BrainCircuit, Languages, TextCursorInput, Palette, Database, Wrench } from 'lucide-react'
+import { BrainCircuit, Languages, TextCursorInput, Palette, Database, Wrench, User } from 'lucide-react'
 import AIModelsView from './AIModelsView'
 import LanguageSettings from './LanguageSettings'
 import FormattingSettings from './FormattingSettings'
 import StyleSettings from './StyleSettings'
 import MemorySettings from './MemorySettings'
 import ToolsSettings from './ToolsSettings'
+import AccountSettings from './AccountSettings'
 import { useI18n } from '../../i18n'
 import type { StylePreset } from '../../types'
 
-type SettingsTab = 'ai' | 'style' | 'formatting' | 'language' | 'memory' | 'tools'
+type SettingsTab = 'ai' | 'style' | 'formatting' | 'language' | 'memory' | 'tools' | 'account'
 
 interface SettingsViewProps {
   stylePresets: StylePreset[]
@@ -29,6 +30,7 @@ export default function SettingsView({ stylePresets, onSaveStyle, onDeleteStyle 
     { id: 'language', label: t('settingsLanguageTab'), icon: Languages },
     { id: 'memory', label: t('settingsMemoryTab'), icon: Database },
     { id: 'tools', label: t('settingsToolsTab'), icon: Wrench },
+    { id: 'account', label: t('settingsAccountTab'), icon: User },
   ]
 
   return (
@@ -52,7 +54,7 @@ export default function SettingsView({ stylePresets, onSaveStyle, onDeleteStyle 
         })}
       </div>
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
         {tab === 'ai' ? (
           <AIModelsView />
         ) : tab === 'style' ? (
@@ -67,10 +69,13 @@ export default function SettingsView({ stylePresets, onSaveStyle, onDeleteStyle 
           <LanguageSettings />
         ) : tab === 'memory' ? (
           <MemorySettings />
-        ) : (
+        ) : tab === 'tools' ? (
           <ToolsSettings />
+        ) : (
+          <AccountSettings />
         )}
       </div>
     </main>
   )
 }
+
