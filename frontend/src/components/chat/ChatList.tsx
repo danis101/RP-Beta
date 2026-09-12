@@ -57,10 +57,18 @@ export default function ChatList({
     return defaultPersona
   }
 
-  const filtered = conversations.filter((conv) => {
-    const character = getCharacter(conv.characterId)
-    return character ? character.name.toLowerCase().includes(query.toLowerCase()) : false
-  })
+  // Sortujemy kopie po ostatniej wiadomosci, nie po zapisie ustawien rozmowy.
+  // Puste rozmowy trafiaja na dol; ID zapewnia stala kolejnosc przy remisie.
+  const filtered = conversations
+    .filter((conv) => {
+      const character = getCharacter(conv.characterId)
+      return character ? character.name.toLowerCase().includes(query.toLowerCase()) : false
+    })
+    .sort((a, b) => {
+      const aTime = a.messages[a.messages.length - 1]?.timestamp ?? 0
+      const bTime = b.messages[b.messages.length - 1]?.timestamp ?? 0
+      return bTime - aTime || a.id.localeCompare(b.id)
+    })
 
   const dot = apiDot[apiStatus.status]
 
@@ -146,4 +154,3 @@ export default function ChatList({
     </aside>
   )
 }
-
