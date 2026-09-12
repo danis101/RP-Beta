@@ -90,10 +90,11 @@ Optional environment variables (sensible defaults built in; set only if you need
 
 | Variable ↕▾ | Default ↕▾ | Purpose ↕▾ |
 |---|---|---|
-| −`PROXY_ALLOWED_HOSTS` | *(empty)* | Comma-separated hosts allowed as integration proxy targets. Empty means private LAN addresses only. Add public hostnames here if your model/image/search services live outside your LAN. |
-| `PROXY_TIMEOUT_MS` | `15000` | Per-request timeout for the integration proxy. Raise it if your image generator or cold-start model takes longer than 15 seconds. |
+| `PROXY_ALLOWED_HOSTS` | *(empty)* | Comma-separated hosts allowed as integration proxy targets. Empty means private LAN addresses only. Add public hostnames here if your model/image/search services live outside your LAN. |
+| `PROXY_TIMEOUT_GET_MS` | `60000` | Timeout for GET requests through the integration proxy (model lists, web search). |
+| `PROXY_TIMEOUT_POST_MS` | `600000` | Timeout for POST requests through the integration proxy (chat streaming, image generation). Raise only if your image generator or a cold-start model takes even longer. |
 | `GC_MIN_BLOB_AGE_MS` | `3600000` (1h) | Age below which uploaded blobs are protected from garbage collection even without references. |
-⚙
+| ⚙ |  |  |
 
 ### 3. Start the application
 
@@ -145,6 +146,7 @@ Treat the database, browser profile, and backups accordingly. This is a trusted-
 The application is usable and suitable for a trusted group on a LAN or VPN. Known limitations, all tracked for future work:
 
 - **Concurrent message editing:** conflicting edits to the same message use per-message last-write-wins, with the server copy winning equal timestamps. Deleted messages stay deleted across devices. This does not combine the text of two competing edits; device clock differences can affect which edit wins.
+- **Conversation settings on conflict:** persona, style, and lorebook selection on a conversation use a preference for the local value only when it is set. Clearing a setting on one device may revive the value from another device on the next merge. Per-field versioning is planned.
 - **Conversation save queue:** each conversation change triggers an independent PUT. Rapid edits on slow networks may benefit from a save queue and a visible saving/error indicator; this is planned.
 - **API profile preset exchange:** explicit JSON export/import, with optional inclusion of API keys, is not yet implemented. Configure each profile manually per account for now.
 - **Background generation:** the browser still manages response generation and tool execution. Phone sleep or a suspended browser can interrupt receiving a response; durable server-managed generation is planned.
@@ -242,3 +244,4 @@ RP-Beta/
 ## License
 
 A project license has not been specified yet.
+
