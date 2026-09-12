@@ -3,7 +3,7 @@ const assert = require('node:assert/strict')
 const path = require('node:path')
 const Module = require('node:module')
 
-let OpenAIAdapter, buildToolDeclarations, getTool
+let OpenAIAdapter, buildToolDeclarations, getTool, addInitialUserMessage
 before(async () => {
   // Vite compiles the real browser modules (including import.meta.env) for Node.
   // No files, model requests or application server are needed.
@@ -19,7 +19,7 @@ before(async () => {
   const compiled = new Module(__filename, module)
   compiled.paths = module.paths
   compiled._compile(bundle.output.find(item => item.type === 'chunk' && item.isEntry).code, __filename)
-  ;({ OpenAIAdapter, buildToolDeclarations, getTool } = compiled.exports)
+  ;({ OpenAIAdapter, buildToolDeclarations, getTool, addInitialUserMessage } = compiled.exports)
 })
 
 for (const [webSearchEnabled, imageGenEnabled, names] of [
@@ -81,6 +81,69 @@ test('text-only calls (refiner/summary) omit tools by default', async (t) => {
   assert.equal('tools' in body, false)
   assert.equal('tool_choice' in body, false)
 })
+
+test('initial user compatibility preserves greeting and history, and is idempotent', () => {
+  const messages = [
+    { role: 'system', content: 'Character description' },
+    { role: 'assistant', content: 'Hello!' },
+    { role: 'user', content: 'test' },
+    { role: 'assistant', content: 'reply' },
+    { role: 'user', content: 'now?' },
+  ]
+  const snapshot = structuredClone(messages)
+  for (const enabled of [undefined, false]) {
+    assert.equal(addInitialUserMessage(messages, enabled, 'Alice'), messages)
+  }
+  const prepared = addInitialUserMessage(messages, true, 'Alice')
+  assert.deepEqual(prepared, [messages[0], { role: 'user', content: 'Start new chat as Alice.' }, ...messages.slice(1)])
+  assert.deepEqual(messages, snapshot)
+  assert.equal(addInitialUserMessage(prepared, true, 'Alice'), prepared)
+})
+
+test('initial user compatibility leaves user-first, empty and tool-first histories unchanged', () => {
+  for (const messages of [
+    [], [{ role: 'system', content: 'prompt' }],
+    [{ role: 'user', content: 'hello' }],
+    [{ role: 'system', content: 'prompt' }, { role: 'user', content: 'hello' }],
+    [{ role: 'assistant', content: '', tool_calls: [{ id: 'call', type: 'function', function: { name: 'web_search', arguments: '{}' } }] }],
+    [{ role: 'tool', tool_call_id: 'call', content: 'result' }],
+  ]) {
+    assert.equal(addInitialUserMessage(messages, true, 'Alice'), messages)
+  }
+  assert.deepEqual(addInitialUserMessage([{ role: 'assistant', content: 'Hello' }], true, 'Alice'), [
+    { role: 'user', content: 'Start new chat as Alice.' }, { role: 'assistant', content: 'Hello' },
+  ])
+})
+
+for (const streaming of [false, true]) {
+  test(`compatible greeting reaches API with tools intact (streaming=${streaming})`, async (t) => {
+    let body
+    t.mock.method(globalThis, 'fetch', async (_url, init) => {
+      body = JSON.parse(init.body)
+      return streaming ? new Response('data: [DONE]\n\n') : Response.json({ choices: [{ message: { content: 'ok' } }] })
+    })
+    const tools = buildToolDeclarations({ imageGenEnabled: true, webSearchEnabled: true })
+    const toolCall = { id: 'call', type: 'function', function: { name: 'web_search', arguments: '{"query":"test"}' } }
+    const history = [
+      { role: 'system', content: 'prompt' }, { role: 'assistant', content: 'hello' },
+      { role: 'user', content: 'search' },
+    ]
+    const followUp = [
+      { role: 'assistant', content: '', tool_calls: [toolCall] },
+      { role: 'tool', tool_call_id: 'call', content: 'result' },
+    ]
+    const params = { messages: [...addInitialUserMessage(history, true, 'Alice'), ...followUp], tools }
+    const adapter = new OpenAIAdapter({ baseUrl: 'http://model.test', apiKey: '', model: 'local-model' })
+    if (streaming) {
+      await adapter.streamMessage(params, { onToken() {}, onDone() {}, onError(error) { throw error } })
+    } else {
+      await adapter.sendMessage(params)
+    }
+    assert.deepEqual(body.messages.map(message => message.role), ['system', 'user', 'assistant', 'user', 'assistant', 'tool'])
+    assert.deepEqual(body.messages.slice(-2), followUp)
+    assert.deepEqual(body.tools, tools)
+  })
+}
 
 test('execution lookup rejects unknown tools and rechecks toggles after declaration', () => {
   const settings = { webSearchEnabled: true, imageGenEnabled: true }

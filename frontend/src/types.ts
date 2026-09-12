@@ -118,6 +118,8 @@ export interface ApiProfile {
   maxTokens: number
   contextLength: number
   streamingEnabled: boolean
+  /** Dodaj ture user przed powitaniem assistant, tylko w zadaniu do modelu. */
+  initialUserMessageEnabled?: boolean
   memoryMessages: number
   visionEnabled: boolean
   visionModel?: string
@@ -271,4 +273,3 @@ export interface Conversation {
   _serverCreatedAt?: number
   _serverUpdatedAt?: number
 }
-
