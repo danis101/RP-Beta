@@ -2,7 +2,7 @@
 
 A self-hosted, messenger-style frontend for roleplay and everyday conversations with language models. Bring your own model endpoint, create or import character cards, and keep your conversations and images on your own server.
 
-**Work in progress, already usable.** Core chat, character management, image generation, and server-backed storage are implemented. Synchronization between multiple devices is functional; message-level merge on conflict is still being refined. Expect changes and keep backups before updating.
+**Work in progress, already usable.** Core chat, character management, image generation, and server-backed storage are implemented. Synchronization merges messages individually and preserves message deletions across devices. Expect changes and keep backups before updating.
 
 RP is designed for a trusted **LAN or VPN**, with friends able to use the same model and image-generation services. It is not intended to be deployed as a public internet service.
 
@@ -22,6 +22,7 @@ RP is designed for a trusted **LAN or VPN**, with friends able to use the same m
 - **Blob storage** for new portraits, avatars, attachments, and generated images, with garbage collection that protects freshly uploaded files. Legacy inline images remain supported.
 - **Integration proxy** for model, search, and image services — authenticated, allowlist-scoped, and timeout-bounded.
 - **English and Polish UI.**
+- **Mobile chat layout** with bottom navigation, a separate conversation list, and a section dropdown in settings.
 
 ## How it runs
 
@@ -143,11 +144,10 @@ Treat the database, browser profile, and backups accordingly. This is a trusted-
 
 The application is usable and suitable for a trusted group on a LAN or VPN. Known limitations, all tracked for future work:
 
-- **Concurrent message editing:** the merge strategy uses per-message last-write-wins with tombstones (deleted messages stay deleted across devices). Local edits made in the same second as a remote write may still resolve in favor of the server. Prefer one device at a time for editing an existing conversation; refresh after reconnecting.
+- **Concurrent message editing:** conflicting edits to the same message use per-message last-write-wins, with the server copy winning equal timestamps. Deleted messages stay deleted across devices. This does not combine the text of two competing edits; device clock differences can affect which edit wins.
 - **Conversation save queue:** each conversation change triggers an independent PUT. Rapid edits on slow networks may benefit from a save queue and a visible saving/error indicator; this is planned.
 - **API profile preset exchange:** explicit JSON export/import, with optional inclusion of API keys, is not yet implemented. Configure each profile manually per account for now.
-- **Tool toggles:** the model may attempt a tool call even when the corresponding toggle in Settings is off. The registry currently sends all tool declarations unconditionally; per-call filtering is planned.
-- **Card editor metadata:** saving an open card editor repeatedly may send stale version metadata. A proper accept-remote flow is planned.
+- **Background generation:** the browser still manages response generation and tool execution. Phone sleep or a suspended browser can interrupt receiving a response; durable server-managed generation is planned.
 - **Summarizer boundary:** the summarizer marks the current message count as processed; messages appended during summarization may be skipped in the next cycle. Message-ID based tracking is planned.
 - **Large `App.tsx`:** logic for saving, generation, and image handling is scheduled to be extracted into dedicated modules.
 
@@ -242,4 +242,3 @@ RP-Beta/
 ## License
 
 A project license has not been specified yet.
-

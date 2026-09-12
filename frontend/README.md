@@ -1,39 +1,40 @@
 # RP Frontend
 
-Frontend pod RP w formie messengera. Ciemny motyw, portrety postaci, karty, historia, tool calls.
+Interfejs React + TypeScript + Vite + Tailwind CSS. Instrukcje uruchomienia całej aplikacji i aktualne ograniczenia są w [głównym README](../README.md).
 
-## Stack
+## Praca lokalna
 
-- React 18 + TypeScript
-- Vite
-- Tailwind CSS 3
-
-## Start
+Polecenia wykonuj w katalogu `frontend`:
 
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 
-## Architektura
+Pełna aplikacja wymaga backendu. Sam serwer Vite nie zastępuje logowania, synchronizacji ani proxy integracji.
 
-- `src/components/ui` — komponenty bazowe (Avatar, dymki, przyciski)
-- `src/components/chat` — lista konwersacji i widok czatu
-- `src/components/layout` — lewa ramka nawigacji
-- `src/services/api` — **warstwa adapterów API**
+## Sprawdzenie zmian
 
-- `types.ts` — wspólny interfejs `ApiAdapter`
-- `MockAdapter.ts` — lokalny mock, działa od razu
-- `OpenAIAdapter.ts` — przygotowany szkielet pod prawdziwe API (pola `baseUrl`, `apiKey`, `model`)
-- `src/data/mock.ts` — przykładowe konwersacje
+```bash
+npm test
+npm run build
+```
 
-## Wizja docelowa (nie teraz)
+Testy obejmują scalanie rozmów i dostępność narzędzi. Build sprawdza TypeScript i tworzy `dist`.
 
-1. Podpięcie prawdziwego adaptera OpenAI (LLM, txt2img/img2img przez OpenAI-compatible API, multimodal).
-2. Karty postaci: pełny CRUD, system prompt modularny jak w TAVO (JSON, bloczki, wstrzykiwanie).
-3. Tool calls: generowanie obrazów, websearch.
-4. Pakowanie jako desktop (Tauri) na Windows/Linux, potem Android.
-5. Opcjonalny serwer synchronizacji w Dockerze.
+Do sprawdzania układu bez backendu, po wykonaniu builda:
 
-Cała logika API jest odseparowana od UI — podpięcie nowego adaptera nie wymaga zmian w widokach.
+```bash
+node tests/mobile-preview.cjs
+```
 
+Otwórz `http://127.0.0.1:5173` i zaloguj się jako `test` / `test`. Podgląd używa przykładowych danych w pamięci; nie sprawdza rzeczywistej synchronizacji ani generowania AI. Po zmianach ponownie wykonaj build i odśwież stronę. Zakończ podgląd przez Ctrl+C.
+
+## Struktura
+
+- `src/App.tsx` — koordynacja widoków, zapisywania i generowania.
+- `src/components` — czat, karty, ustawienia i pozostałe widoki.
+- `src/context` — stan logowania, ustawień i konfliktów.
+- `src/services` — adaptery modeli oraz komunikacja z backendem.
+- `src/lib` — formatowanie, obrazy, prompty i scalanie rozmów.
+- `tests` — testy regresji i izolowany podgląd UI.
