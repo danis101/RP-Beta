@@ -9,8 +9,8 @@
  * Sharding po 2 znakach trzyma listowanie katalogów szybkie przy wielu plikach.
  */
 
-import { createHash } from 'node:crypto'
-import { mkdir, writeFile, unlink, stat } from 'node:fs/promises'
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdir, writeFile, rename, rm, unlink, stat } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { db, blobPath } from './db'
 
@@ -45,15 +45,28 @@ export async function saveBlob(
 
   const path = blobPath(userId, sha256)
   await mkdir(dirname(path), { recursive: true })
-  await writeFile(path, bytes)
+  // Publikujemy dopiero kompletny plik. Rownolegly upload tych samych bajtow
+  // nie moze obciac pliku, ktory inny request juz udostepnil do odczytu.
+  const temporaryPath = `${path}.${randomUUID()}.tmp`
+  try {
+    await writeFile(temporaryPath, bytes, { flag: 'wx' })
+    await rename(temporaryPath, path)
+  } finally {
+    await rm(temporaryPath, { force: true })
+  }
 
   const now = Date.now()
   db.run(
-    'INSERT INTO blobs (sha256, user_id, size, mime, created_at) VALUES (?, ?, ?, ?, ?)',
+    `INSERT INTO blobs (sha256, user_id, size, mime, created_at) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(user_id, sha256) DO NOTHING`,
     [sha256, userId, bytes.length, mime, now],
   )
 
-  return { sha256, size: bytes.length, mime, created_at: now }
+  // Inny upload mogl zapisac metadane podczas await powyzej. Oba zadania
+  // zwracaja ten sam rekord, bez zmiany MIME ani wieku istniejacego bloba.
+  const saved = findBlob(userId, sha256)
+  if (!saved) throw new Error('Brak metadanych po zapisie bloba')
+  return saved
 }
 
 /** Zwraca ścieżkę do pliku i potwierdza, że plik istnieje na dysku. */
