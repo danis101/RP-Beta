@@ -1145,9 +1145,11 @@ export default function App() {
     if (activeId === id) setActiveId(next[0]?.id ?? null)
   }
 
-  const handleSaveCard = async (card: CharacterCard) => {
+  const handleSaveCard = async (card: CharacterCard): Promise<CharacterCard | null> => {
+    let savedCard: CharacterCard
     try {
       const saved = await charactersApi.update(card)
+      savedCard = saved
       setCharacters((prev) => {
         const exists = prev.some((c) => c.id === saved.id)
         return exists ? prev.map((c) => (c.id === saved.id ? saved : c)) : [...prev, saved]
@@ -1164,11 +1166,11 @@ export default function App() {
             }
           },
         })
-        return
+        return null
       }
       console.error('Zapis karty nie powiodl sie:', err)
       alert(err instanceof Error ? err.message : String(err))
-      return
+      return null
     }
 
     const cardId = card.id
@@ -1189,6 +1191,7 @@ export default function App() {
         console.warn('Nie udalo sie utworzyc konwersacji:', err)
       }
     }
+    return savedCard
   }
 
   const handleDeleteCard = async (id: string) => {

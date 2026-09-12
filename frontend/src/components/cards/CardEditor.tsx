@@ -9,7 +9,7 @@ import Avatar from '../ui/Avatar'
 
 interface CardEditorProps {
   card: CharacterCard | null
-  onSave: (card: CharacterCard) => void
+  onSave: (card: CharacterCard) => Promise<CharacterCard | null>
   onDelete: (id: string) => void
   onClose: () => void
 }
@@ -39,6 +39,8 @@ export default function CardEditor({ card, onSave, onDelete, onClose }: CardEdit
   })
 
   const [uploadingPortrait, setUploadingPortrait] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const savingRef = useRef(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -129,9 +131,25 @@ export default function CardEditor({ card, onSave, onDelete, onClose }: CardEdit
     URL.revokeObjectURL(link.href)
   }
 
-  const handleSave = () => {
-    if (!draft.name.trim()) return
-    onSave(draft)
+  const handleSave = async () => {
+    if (!draft.name.trim() || savingRef.current) return
+    savingRef.current = true
+    setSaving(true)
+    try {
+      const saved = await onSave(draft)
+      if (!saved) return
+      // Aktualizujemy tylko wersje po WLASNYM udanym zapisie. Pelna podmiana
+      // draftu zgubilaby tekst wpisany podczas oczekiwania na odpowiedz.
+      // Zmiany z innych urzadzen nadal musza wywolac konflikt.
+      setDraft((current) => ({
+        ...current,
+        _serverCreatedAt: saved._serverCreatedAt,
+        _serverUpdatedAt: saved._serverUpdatedAt,
+      }))
+    } finally {
+      savingRef.current = false
+      setSaving(false)
+    }
   }
 
   // Preferujemy portraitBlobId, fallback na stary portrait.
@@ -218,9 +236,11 @@ export default function CardEditor({ card, onSave, onDelete, onClose }: CardEdit
           </button>
           <button
             onClick={handleSave}
-            disabled={!draft.name.trim() || uploadingPortrait}
-            className="rounded-lg bg-accent px-4 py-2 text-[12.5px] font-semibold text-white transition-colors hover:bg-accent-hover disabled:opacity-40"
+            disabled={!draft.name.trim() || uploadingPortrait || saving}
+            aria-busy={saving}
+            className="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-[12.5px] font-semibold text-white transition-colors hover:bg-accent-hover disabled:opacity-40"
           >
+            {saving && <Loader2 size={14} className="animate-spin" />}
             {t('editorSave')}
           </button>
         </div>

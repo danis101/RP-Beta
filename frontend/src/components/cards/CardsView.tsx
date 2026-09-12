@@ -10,7 +10,7 @@ import CardEditor from './CardEditor'
 
 interface CardsViewProps {
   characters: CharacterCard[]
-  onSave: (card: CharacterCard) => void
+  onSave: (card: CharacterCard) => Promise<CharacterCard | null>
   onDelete: (id: string) => void
   onStartChat: (characterId: string) => void
 }
@@ -64,8 +64,8 @@ export default function CardsView({ characters, onSave, onDelete, onStartChat }:
         }
       }
 
-      onSave(card)
-      setEditing(card)
+      const saved = await onSave(card)
+      if (saved) setEditing(saved)
     } catch (error) {
       console.error('Blad importu karty:', error)
       alert(t('importError'))
