@@ -28,7 +28,7 @@ import {
 import { ConflictError } from './services/sync/client'
 import { getBlobAsDataUrl } from './lib/blobCache'
 import { mergeConversations } from './lib/conversationMerge'
-import { addInitialUserMessage } from './lib/chatCompatibility'
+import { addInitialUserMessage, mergeInitialSystemMessages } from './lib/chatCompatibility'
 import { buildSystemPrompt } from './lib/prompt'
 import { buildStyledSystemPrompt, getStyledChatInjections } from './lib/style'
 import { activateLorebooks } from './lib/lorebook'
@@ -514,7 +514,11 @@ export default function App() {
       messages.push({ role: 'system', content })
     }
 
-    return addInitialUserMessage(messages, activeProfile?.initialUserMessageEnabled, activeCharacter.name)
+    return addInitialUserMessage(
+      mergeInitialSystemMessages(messages, activeProfile?.mergeInitialSystemMessages),
+      activeProfile?.initialUserMessageEnabled,
+      activeCharacter.name,
+    )
   }
 
   const runCompletion = async (

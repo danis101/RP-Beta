@@ -120,6 +120,7 @@ export interface ApiProfile {
   streamingEnabled: boolean
   /** Dodaj ture user przed powitaniem assistant, tylko w zadaniu do modelu. */
   initialUserMessageEnabled?: boolean
+  mergeInitialSystemMessages?: boolean
   memoryMessages: number
   visionEnabled: boolean
   visionModel?: string

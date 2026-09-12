@@ -236,24 +236,29 @@ export class OpenAIAdapter implements ApiAdapter {
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
-    let accumulatedContent = ''
     let toolCalls: APIToolCall[] = []
     let toolCallInProgress: APIToolCall | null = null
 
     try {
       while (true) {
         const { done, value } = await reader.read()
-        if (done) break
-
-        buffer += decoder.decode(value, { stream: true })
-        const parts = buffer.split('\n\n')
-        buffer = parts.pop() ?? ''
+        buffer += done ? decoder.decode() : decoder.decode(value, { stream: true })
+        const parts = buffer.split(/\r?\n\r?\n/)
+        buffer = done ? '' : parts.pop() ?? ''
 
         for (const part of parts) {
-          const line = part.trim()
-          if (!line.startsWith('data:')) continue
-
-          const payload = line.slice(5).trim()
+          const lines = part.split(/\r?\n/)
+          const isErrorEvent = lines.some(line => /^event:\s*error\s*$/.test(line))
+          // SSE moze zawierac event/id/comment przed wlasciwymi danymi.
+          // Niektore serwery zamiast SSE zwracaja sam JSON bledu z HTTP 200.
+          const payload = part.trim().startsWith('{') ? part.trim() : lines
+            .filter(line => line.startsWith('data:'))
+            .map(line => line.slice(5).replace(/^ /, ''))
+            .join('\n').trim()
+          if (!payload) {
+            if (isErrorEvent) throw new Error('OpenAI API: blad w strumieniu odpowiedzi.')
+            continue
+          }
           if (payload === '[DONE]') {
             if (toolCalls.length > 0 && callbacks.onToolCalls) {
               callbacks.onToolCalls(toolCalls)
@@ -262,44 +267,50 @@ export class OpenAIAdapter implements ApiAdapter {
             return
           }
 
+          let json: any
           try {
-            const json = JSON.parse(payload)
-            const delta = json.choices?.[0]?.delta
+            json = JSON.parse(payload)
+          } catch {
+            throw new Error('OpenAI API: nieprawidlowe dane w strumieniu odpowiedzi.')
+          }
+          if (json?.error || isErrorEvent) {
+            const error = json?.error ?? json
+            const detail = typeof error === 'string' ? error : error?.message ?? JSON.stringify(error)
+            throw new Error(`OpenAI API: ${detail}`)
+          }
+          const delta = json.choices?.[0]?.delta
 
-            if (delta?.reasoning_content && callbacks.onThinking) {
-              callbacks.onThinking(delta.reasoning_content)
-            } else if ((delta?.reasoning || delta?.thinking) && callbacks.onThinking) {
-              callbacks.onThinking(delta.reasoning ?? delta.thinking)
-            }
+          if (delta?.reasoning_content && callbacks.onThinking) {
+            callbacks.onThinking(delta.reasoning_content)
+          } else if ((delta?.reasoning || delta?.thinking) && callbacks.onThinking) {
+            callbacks.onThinking(delta.reasoning ?? delta.thinking)
+          }
 
-            if (delta?.tool_calls) {
-              for (const tc of delta.tool_calls) {
-                if (tc.id) {
-                  toolCallInProgress = {
-                    id: tc.id,
-                    type: 'function',
-                    function: {
-                      name: tc.function?.name || '',
-                      arguments: tc.function?.arguments || '',
-                    },
-                  }
-                  toolCalls.push(toolCallInProgress)
-                } else if (toolCallInProgress) {
-                  if (tc.function?.arguments) {
-                    toolCallInProgress.function.arguments += tc.function.arguments
-                  }
+          if (delta?.tool_calls) {
+            for (const tc of delta.tool_calls) {
+              if (tc.id) {
+                toolCallInProgress = {
+                  id: tc.id,
+                  type: 'function',
+                  function: {
+                    name: tc.function?.name || '',
+                    arguments: tc.function?.arguments || '',
+                  },
+                }
+                toolCalls.push(toolCallInProgress)
+              } else if (toolCallInProgress) {
+                if (tc.function?.arguments) {
+                  toolCallInProgress.function.arguments += tc.function.arguments
                 }
               }
             }
+          }
 
-            if (delta?.content) {
-              accumulatedContent += delta.content
-              callbacks.onToken(delta.content)
-            }
-          } catch {
-            // ignore incomplete lines
+          if (delta?.content) {
+            callbacks.onToken(delta.content)
           }
         }
+        if (done) break
       }
 
       if (toolCalls.length > 0 && callbacks.onToolCalls) {
@@ -309,6 +320,9 @@ export class OpenAIAdapter implements ApiAdapter {
       callbacks.onDone()
     } catch (error) {
       callbacks.onError(error instanceof Error ? error : new Error(String(error)))
+    } finally {
+      await reader.cancel().catch(() => {})
+      reader.releaseLock()
     }
   }
 

@@ -407,6 +407,20 @@ export default function AIModelsView() {
               />
             </label>
 
+            <label className="flex cursor-pointer items-center justify-between gap-3 border-t border-edge py-3">
+              <div className="min-w-0 flex-1">
+                <div className="text-[12.5px] text-[#b8bdd0]">{t('aiMergeInitialSystem')}</div>
+                <div className="text-[11px] text-[#6a6a72]">{t('aiMergeInitialSystemHint')}</div>
+              </div>
+              <input
+                type="checkbox"
+                aria-label={t('aiMergeInitialSystem')}
+                checked={activeProfile.mergeInitialSystemMessages ?? false}
+                onChange={(event) => updateActive({ mergeInitialSystemMessages: event.target.checked })}
+                className="h-5 w-5 shrink-0 accent-accent"
+              />
+            </label>
+
             <div className="flex items-center justify-between gap-2 border-t border-edge pt-3">
               <div className="flex-1">
                 <div className="text-[12.5px] text-[#b8bdd0]">{t('aiHideThinking')}</div>

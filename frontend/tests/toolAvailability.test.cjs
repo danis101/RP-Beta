@@ -3,7 +3,7 @@ const assert = require('node:assert/strict')
 const path = require('node:path')
 const Module = require('node:module')
 
-let OpenAIAdapter, buildToolDeclarations, getTool, addInitialUserMessage
+let OpenAIAdapter, buildToolDeclarations, getTool, addInitialUserMessage, mergeInitialSystemMessages
 before(async () => {
   // Vite compiles the real browser modules (including import.meta.env) for Node.
   // No files, model requests or application server are needed.
@@ -19,7 +19,7 @@ before(async () => {
   const compiled = new Module(__filename, module)
   compiled.paths = module.paths
   compiled._compile(bundle.output.find(item => item.type === 'chunk' && item.isEntry).code, __filename)
-  ;({ OpenAIAdapter, buildToolDeclarations, getTool, addInitialUserMessage } = compiled.exports)
+  ;({ OpenAIAdapter, buildToolDeclarations, getTool, addInitialUserMessage, mergeInitialSystemMessages } = compiled.exports)
 })
 
 for (const [webSearchEnabled, imageGenEnabled, names] of [
@@ -125,14 +125,14 @@ for (const streaming of [false, true]) {
     const tools = buildToolDeclarations({ imageGenEnabled: true, webSearchEnabled: true })
     const toolCall = { id: 'call', type: 'function', function: { name: 'web_search', arguments: '{"query":"test"}' } }
     const history = [
-      { role: 'system', content: 'prompt' }, { role: 'assistant', content: 'hello' },
+      { role: 'system', content: 'lore' }, { role: 'system', content: 'prompt' }, { role: 'assistant', content: 'hello' },
       { role: 'user', content: 'search' },
     ]
     const followUp = [
       { role: 'assistant', content: '', tool_calls: [toolCall] },
       { role: 'tool', tool_call_id: 'call', content: 'result' },
     ]
-    const params = { messages: [...addInitialUserMessage(history, true, 'Alice'), ...followUp], tools }
+    const params = { messages: [...addInitialUserMessage(mergeInitialSystemMessages(history, true), true, 'Alice'), ...followUp], tools }
     const adapter = new OpenAIAdapter({ baseUrl: 'http://model.test', apiKey: '', model: 'local-model' })
     if (streaming) {
       await adapter.streamMessage(params, { onToken() {}, onDone() {}, onError(error) { throw error } })
@@ -141,9 +141,76 @@ for (const streaming of [false, true]) {
     }
     assert.deepEqual(body.messages.map(message => message.role), ['system', 'user', 'assistant', 'user', 'assistant', 'tool'])
     assert.deepEqual(body.messages.slice(-2), followUp)
+    assert.equal(body.messages[0].content, 'lore\n\nprompt')
     assert.deepEqual(body.tools, tools)
   })
 }
+
+test('system merge preserves exact block content and ordering without moving later instructions', () => {
+  const messages = [
+    { role: 'system', content: '  Lore A\n' }, { role: 'system', content: 'Lore B' },
+    { role: 'system', content: 'Character prompt' }, { role: 'assistant', content: 'Greeting' },
+    { role: 'user', content: 'Question' }, { role: 'system', content: 'Depth injection' },
+  ]
+  const snapshot = structuredClone(messages)
+  for (const enabled of [false, undefined]) assert.equal(mergeInitialSystemMessages(messages, enabled), messages)
+  const merged = mergeInitialSystemMessages(messages, true)
+  assert.deepEqual(merged, [{ role: 'system', content: '  Lore A\n\n\nLore B\n\nCharacter prompt' }, ...messages.slice(3)])
+  assert.deepEqual(messages, snapshot)
+  assert.equal(mergeInitialSystemMessages(merged, true), merged)
+  for (const input of [[], [{ role: 'user', content: 'Hi' }], [{ role: 'system', content: 'One' }]]) {
+    assert.equal(mergeInitialSystemMessages(input, true), input)
+  }
+})
+
+for (const wire of [
+  'data: {"error":{"message":"roles must alternate"}}\n\ndata: [DONE]\n\n',
+  'event: error\r\ndata: {"message":"roles must alternate"}\r\n\r\n',
+  'data: {"error":"roles must alternate"}',
+  '{"error":{"message":"roles must alternate"}}',
+]) {
+  test(`stream surfaces engine errors without completing a blank reply: ${wire.slice(0, 30)}`, async (t) => {
+    t.mock.method(globalThis, 'fetch', async () => new Response(wire))
+    const adapter = new OpenAIAdapter({ baseUrl: 'http://model.test', apiKey: '', model: 'local-model' })
+    const errors = []
+    let done = 0
+    let tokens = ''
+    await adapter.streamMessage({ messages: [{ role: 'user', content: 'test' }] }, {
+      onToken: token => { tokens += token }, onDone: () => { done++ }, onError: error => errors.push(error),
+    })
+    assert.equal(done, 0)
+    assert.equal(tokens, '')
+    assert.equal(errors.length, 1)
+    assert.match(errors[0].message, /roles must alternate/)
+  })
+}
+
+test('stream handles fragmented CRLF events, reasoning, tools and final unterminated event', async (t) => {
+  const wire = ': heartbeat\r\n\r\n' + [
+    { choices: [{ delta: { reasoning_content: 'Thinking' } }] },
+    { choices: [{ delta: { content: 'Cześć' } }] },
+    { choices: [{ delta: { tool_calls: [{ id: 'call', function: { name: 'web_search', arguments: '{"query":' } }] } }] },
+    { choices: [{ delta: { tool_calls: [{ function: { arguments: '"test"}' } }] } }] },
+  ].map(event => `event: message\r\ndata: ${JSON.stringify(event)}`).join('\r\n\r\n')
+  const bytes = new TextEncoder().encode(wire)
+  t.mock.method(globalThis, 'fetch', async () => new Response(new ReadableStream({
+    start(controller) {
+      // Byte boundaries include UTF-8 characters and the CRLF event separator.
+      for (const byte of bytes) controller.enqueue(Uint8Array.of(byte))
+      controller.close()
+    },
+  })))
+  const adapter = new OpenAIAdapter({ baseUrl: 'http://model.test', apiKey: '', model: 'local-model' })
+  let content = '', thinking = '', calls, done = 0
+  await adapter.streamMessage({ messages: [{ role: 'user', content: 'test' }] }, {
+    onToken: token => { content += token }, onThinking: token => { thinking += token },
+    onToolCalls: value => { calls = value }, onDone: () => { done++ }, onError: error => { throw error },
+  })
+  assert.equal(content, 'Cześć')
+  assert.equal(thinking, 'Thinking')
+  assert.equal(done, 1)
+  assert.equal(calls[0].function.arguments, '{"query":"test"}')
+})
 
 test('execution lookup rejects unknown tools and rechecks toggles after declaration', () => {
   const settings = { webSearchEnabled: true, imageGenEnabled: true }

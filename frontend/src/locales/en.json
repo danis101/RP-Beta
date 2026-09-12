@@ -1,4 +1,6 @@
 {
+  "aiMergeInitialSystem": "Merge initial system instructions",
+  "aiMergeInitialSystemHint": "Combines the leading system prompt and lorebook blocks into one message, preserving their content and order. Instructions within the conversation stay in place.",
   "aiInitialUserMessage": "User message before greeting",
   "aiInitialUserMessageHint": "For models requiring a user turn first (e.g. Ministral). Adds “Start new chat as [character name].” before the initial greeting, only in the model request. Does not resolve other role ordering conflicts.",
   "chatInsertQuotes": "Wrap in quotes",
