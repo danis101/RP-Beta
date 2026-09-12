@@ -1,6 +1,5 @@
 import type { ApiAdapter, SendMessageParams, StreamCallbacks, ListModelsResult, ModelInfo } from './types'
 import type { ApiProfile, APIToolCall } from '../../types'
-import { buildToolDeclarations } from '../../lib/toolRegistry'
 import { getToken } from '../sync/client'
 
 export interface OpenAIConfig {
@@ -111,10 +110,6 @@ export class OpenAIAdapter implements ApiAdapter {
     return this.config.model
   }
 
-  private buildTools(): ToolDefinition[] {
-    return buildToolDeclarations()
-  }
-
   async sendMessage(params: SendMessageParams): Promise<string> {
     if (!this.isConfigured()) {
       throw new Error('OpenAI adapter nie jest skonfigurowany - uzupelnij Base URL i model.')
@@ -130,8 +125,10 @@ export class OpenAIAdapter implements ApiAdapter {
       ...this.samplerBody(),
     }
 
-    body.tools = this.buildTools()
-    body.tool_choice = 'auto'
+    if (params.tools?.length) {
+      body.tools = params.tools
+      body.tool_choice = 'auto'
+    }
 
     const response = await fetch(url, {
       method: 'POST',
@@ -203,8 +200,10 @@ export class OpenAIAdapter implements ApiAdapter {
       ...this.samplerBody(),
     }
 
-    body.tools = this.buildTools()
-    body.tool_choice = 'auto'
+    if (params.tools?.length) {
+      body.tools = params.tools
+      body.tool_choice = 'auto'
+    }
 
     let response: Response
     try {
@@ -387,4 +386,3 @@ export class OpenAIAdapter implements ApiAdapter {
     return { models, backend: 'generic' }
   }
 }
-

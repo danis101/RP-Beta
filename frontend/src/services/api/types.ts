@@ -1,4 +1,4 @@
-import type { OpenAIMessage } from './OpenAIAdapter'
+import type { OpenAIMessage, ToolDefinition } from './OpenAIAdapter'
 import type { APIToolCall } from '../../types'
 
 export interface SendMessageParams {
@@ -8,6 +8,8 @@ export interface SendMessageParams {
   temperature?: number
   systemPrompt?: string
   signal?: AbortSignal
+  /** Narzedzia dozwolone dla tego wywolania. Brak/pusta lista = bez narzedzi. */
+  tools?: ToolDefinition[]
 }
 
 export interface StreamCallbacks {

@@ -38,7 +38,7 @@ import { useSettings } from './context/SettingsContext'
 import { useAuth } from './context/AuthContext'
 import { useConflict } from './context/ConflictContext'
 import { generateSummary, shouldSummarize } from './lib/summarizer'
-import { getTool, type ToolContext, type ToolResult } from './lib/toolRegistry'
+import { buildToolDeclarations, getTool, type ToolContext, type ToolResult } from './lib/toolRegistry'
 import { generateImage } from './lib/imageGen'
 import { refineImagePrompt } from './lib/refiner'
 import { startApiStatusPolling, stopApiStatusPolling } from './lib/apiStatus'
@@ -81,6 +81,8 @@ function buildFirstMessage(card: CharacterCard): ChatMessage[] {
 export default function App() {
   const { t } = useI18n()
   const { settings, refreshFromServer } = useSettings()
+  const settingsRef = useRef(settings)
+  settingsRef.current = settings
   const { user } = useAuth()
   const { pushBanner } = useConflict()
   const route = useHashRoute()
@@ -534,6 +536,10 @@ export default function App() {
     setLastPrompt({ messages, model: activeProfile?.model ?? 'mock' })
 
     const useStreaming = activeProfile?.streamingEnabled ?? true
+    const tools = buildToolDeclarations(settings)
+    const allowedToolCalls = (calls: APIToolCall[]) => calls.filter(
+      (call) => tools.some((tool) => tool.function.name === call.function.name),
+    )
 
     if (useStreaming) {
       await adapter.streamMessage(
@@ -542,6 +548,7 @@ export default function App() {
           model: activeProfile?.model || undefined,
           temperature: activeProfile?.sampler.temperature,
           signal: controller.signal,
+          tools,
         },
         {
           onToken: (token) => {
@@ -552,7 +559,7 @@ export default function App() {
             thinking += token
           },
           onToolCalls: (calls) => {
-            toolCalls = calls
+            toolCalls = allowedToolCalls(calls)
           },
           onDone: () =>
             finishCompletion(
@@ -576,11 +583,12 @@ export default function App() {
           model: activeProfile?.model || undefined,
           temperature: activeProfile?.sampler.temperature,
           signal: controller.signal,
+          tools,
         })
         try {
           const parsed = JSON.parse(result)
           if (parsed.tool_calls) {
-            toolCalls = parsed.tool_calls
+            toolCalls = allowedToolCalls(parsed.tool_calls)
             accumulated = parsed.content || ''
           } else {
             accumulated = result
@@ -647,7 +655,7 @@ export default function App() {
       setToolRunning(true)
       try {
         for (const tc of toolCalls) {
-          const tool = getTool(tc.function.name)
+          const tool = getTool(tc.function.name, settingsRef.current)
           if (!tool) continue
 
           const args = (() => {

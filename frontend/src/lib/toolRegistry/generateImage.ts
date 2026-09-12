@@ -16,6 +16,7 @@ import { uploadBlobFromBlob } from '../../services/sync'
  */
 export const generateImageTool: ToolDef = {
   name: 'generate_image',
+  enabledSetting: 'imageGenEnabled',
   declaration: {
     type: 'function',
     function: {
@@ -126,4 +127,3 @@ export const generateImageTool: ToolDef = {
 }
 
 // === END OF FILE ===
-

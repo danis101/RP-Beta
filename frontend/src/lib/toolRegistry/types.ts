@@ -34,6 +34,12 @@ export interface ToolSettings {
   imageGenContextMessages?: number
 }
 
+/** Przelaczniki dostepnosci narzedzi, wspolne dla deklaracji i wykonania. */
+export interface ToolAvailability {
+  webSearchEnabled: boolean
+  imageGenEnabled: boolean
+}
+
 /**
  * Wynik wykonania narzędzia.
  */
@@ -48,10 +54,10 @@ export interface ToolResult {
  */
 export interface ToolDef {
   name: string
+  enabledSetting: keyof ToolAvailability
   declaration: ToolDefinition
   run(args: Record<string, unknown>, call: APIToolCall, ctx: ToolContext): Promise<ToolResult>
 }
 
 /** Rejestr narzędzi. */
 export type ToolRegistry = Record<string, ToolDef>
-

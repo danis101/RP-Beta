@@ -8,6 +8,7 @@ import { searchWeb } from '../tools'
  */
 export const webSearchTool: ToolDef = {
   name: 'web_search',
+  enabledSetting: 'webSearchEnabled',
   declaration: {
     type: 'function',
     function: {
