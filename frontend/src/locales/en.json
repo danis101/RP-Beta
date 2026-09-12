@@ -1,4 +1,7 @@
 {
+  "chatInsertQuotes": "Wrap in quotes",
+  "chatInsertAsterisks": "Wrap in asterisks",
+  "chatInsertBackticks": "Wrap in backticks",
   "navMobile": "Main navigation",
   "navMore": "More options",
   "navChat": "Chats",

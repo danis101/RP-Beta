@@ -1,4 +1,7 @@
 {
+  "chatInsertQuotes": "Otocz cudzysłowami",
+  "chatInsertAsterisks": "Otocz gwiazdkami",
+  "chatInsertBackticks": "Otocz znakami `",
   "navMobile": "Nawigacja główna",
   "navMore": "Więcej opcji",
   "navChat": "Rozmowy",

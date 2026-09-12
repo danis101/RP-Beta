@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Send, Square, Plus, X, Image as ImageIcon, Wand2, Loader2 } from 'lucide-react'
 import { useI18n } from '../../i18n'
 import type { MessageAttachment } from '../../types'
@@ -36,7 +36,29 @@ export default function InputBar({
   const [plusOpen, setPlusOpen] = useState(false)
   const plusRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const pendingSelectionRef = useRef<{ start: number; end: number } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // React aktualizuje wartosc textarea przed przywroceniem kursora/zaznaczenia.
+  useLayoutEffect(() => {
+    const selection = pendingSelectionRef.current
+    const el = textareaRef.current
+    if (!selection || !el) return
+    pendingSelectionRef.current = null
+    el.setSelectionRange(selection.start, selection.end)
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`
+  }, [value])
+
+  const insertPair = (marker: string) => {
+    const el = textareaRef.current
+    if (!el) return
+    const { selectionStart: start, selectionEnd: end } = el
+    pendingSelectionRef.current = { start: start + marker.length, end: end + marker.length }
+    // Fokus w obsludze klikniecia pozwala kontynuowac pisanie na telefonie.
+    el.focus({ preventScroll: true })
+    setValue(el.value.slice(0, start) + marker + el.value.slice(start, end) + marker + el.value.slice(end))
+  }
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -102,6 +124,25 @@ export default function InputBar({
 
   return (
     <div className="space-y-2">
+      <div className="flex justify-end gap-1.5 md:hidden">
+        {[
+          { marker: '"', label: 'chatInsertQuotes' },
+          { marker: '*', label: 'chatInsertAsterisks' },
+          { marker: '`', label: 'chatInsertBackticks' },
+        ].map(({ marker, label }) => (
+          <button
+            key={marker}
+            type="button"
+            aria-label={t(label)}
+            title={t(label)}
+            onPointerDown={(event) => event.preventDefault()}
+            onClick={() => insertPair(marker)}
+            className="flex h-11 w-11 items-center justify-center rounded-lg border border-edge bg-surface font-mono text-base text-[#b8bdd0] active:bg-surface-light"
+          >
+            {marker + marker}
+          </button>
+        ))}
+      </div>
       {/* Podglad zalacznikow */}
       {attachments.length > 0 && (
         <div className="flex flex-wrap gap-2">
