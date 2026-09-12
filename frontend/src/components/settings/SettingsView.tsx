@@ -18,7 +18,7 @@ interface SettingsViewProps {
   onDeleteStyle: (id: string) => void
 }
 
-/** Ustawienia z sub-nawigacją po lewej i przewijaną zawartością po prawej. */
+/** Sekcje ustawien: dropdown na telefonie, boczna nawigacja na desktopie. */
 export default function SettingsView({ stylePresets, onSaveStyle, onDeleteStyle }: SettingsViewProps) {
   const { t } = useI18n()
   const [tab, setTab] = useState<SettingsTab>('ai')
@@ -34,8 +34,18 @@ export default function SettingsView({ stylePresets, onSaveStyle, onDeleteStyle 
   ]
 
   return (
-    <main className="flex min-w-0 flex-1 overflow-hidden bg-surface-dark">
-      <div className="flex w-52 shrink-0 flex-col gap-1 border-r border-edge bg-surface p-3">
+    <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-surface-dark md:flex-row">
+      <div className="shrink-0 border-b border-edge bg-surface px-3 py-2 md:hidden">
+        <select
+          aria-label={t('navSettings')}
+          value={tab}
+          onChange={(event) => setTab(event.target.value as SettingsTab)}
+          className="min-h-11 w-full min-w-0 rounded-lg border border-edge bg-surface-dark px-3 py-2 text-base text-[#e8e8eb] outline-none focus:border-accent"
+        >
+          {items.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+        </select>
+      </div>
+      <div className="hidden min-h-0 w-52 shrink-0 flex-col gap-1 overflow-y-auto border-r border-edge bg-surface p-3 md:flex">
         {items.map((item) => {
           const Icon = item.icon
           const isActive = tab === item.id
@@ -78,4 +88,3 @@ export default function SettingsView({ stylePresets, onSaveStyle, onDeleteStyle 
     </main>
   )
 }
-
