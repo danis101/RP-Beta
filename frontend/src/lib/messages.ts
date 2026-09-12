@@ -36,6 +36,18 @@ export function getMessageUpdatedAt(msg: ChatMessage): number {
   return msg._updatedAt ?? msg.timestamp
 }
 
+/** Kazda lokalna zmiana musi miec wersje nowsza od poprzedniej, nawet w tej samej ms. */
+export function updateMessage(
+  msg: ChatMessage,
+  patch: Partial<Pick<ChatMessage, 'variants' | 'selectedVariant'>>,
+): ChatMessage {
+  return {
+    ...msg,
+    ...patch,
+    _updatedAt: Math.max(Date.now(), getMessageUpdatedAt(msg) + 1),
+  }
+}
+
 /** Lista widocznych wiadomości (bez tombstone'ów). */
 export function visibleMessages(conv: {
   messages: ChatMessage[]
@@ -46,4 +58,3 @@ export function visibleMessages(conv: {
   const set = new Set(deleted)
   return conv.messages.filter((m) => !set.has(m.id))
 }
-

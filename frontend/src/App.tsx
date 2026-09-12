@@ -31,7 +31,7 @@ import { mergeConversations } from './lib/conversationMerge'
 import { buildSystemPrompt } from './lib/prompt'
 import { buildStyledSystemPrompt, getStyledChatInjections } from './lib/style'
 import { activateLorebooks } from './lib/lorebook'
-import { makeMessage, getContent } from './lib/messages'
+import { makeMessage, getContent, updateMessage } from './lib/messages'
 import { substituteTokens } from './lib/tokens'
 import { useI18n } from './i18n'
 import { useSettings } from './context/SettingsContext'
@@ -716,11 +716,10 @@ export default function App() {
           }
 
           if (targetIndex !== -1) {
-            messages[targetIndex] = {
-              ...messages[targetIndex],
+            messages[targetIndex] = updateMessage(messages[targetIndex], {
               variants: [...messages[targetIndex].variants, tempVariant],
               selectedVariant: messages[targetIndex].variants.length,
-            }
+            })
             const updated: Conversation = { ...c, messages, unread: 0 }
             persistConversation(updated)
             return updated
@@ -791,17 +790,15 @@ export default function App() {
 
         if (targetIndex !== -1) {
           if (mode === 'regenerate') {
-            messages[targetIndex] = {
-              ...messages[targetIndex],
+            messages[targetIndex] = updateMessage(messages[targetIndex], {
               variants: [...messages[targetIndex].variants, newVariant],
               selectedVariant: messages[targetIndex].variants.length,
-            }
+            })
           } else {
-            messages[targetIndex] = {
-              ...messages[targetIndex],
+            messages[targetIndex] = updateMessage(messages[targetIndex], {
               variants: [newVariant],
               selectedVariant: 0,
-            }
+            })
           }
           const updated: Conversation = { ...c, messages, unread: 0 }
           persistConversation(updated)
@@ -887,11 +884,10 @@ export default function App() {
         if (c.id !== activeId) return c
         const messages = c.messages.map((m) => {
           if (m.id !== messageId) return m
-          return {
-            ...m,
+          return updateMessage(m, {
             variants: [...m.variants, variant],
             selectedVariant: m.variants.length,
-          }
+          })
         })
         const updated: Conversation = { ...c, messages }
         persistConversation(updated)
@@ -915,7 +911,7 @@ export default function App() {
           if (variantIndex < 0 || variantIndex >= m.variants.length) return m
           const variants = [...m.variants]
           variants[variantIndex] = { ...variants[variantIndex], ...patch }
-          return { ...m, variants }
+          return updateMessage(m, { variants })
         })
         const updated: Conversation = { ...c, messages }
         persistConversation(updated)
@@ -1057,7 +1053,7 @@ export default function App() {
           const variant = m.variants[m.selectedVariant] ?? m.variants[0]
           const variants = [...m.variants]
           variants[m.selectedVariant] = { ...variant, content }
-          return { ...m, variants }
+          return updateMessage(m, { variants })
         })
         const updated: Conversation = { ...c, messages }
         persistConversation(updated)
@@ -1073,6 +1069,7 @@ export default function App() {
         const updated: Conversation = {
           ...c,
           messages: c.messages.filter((m) => m.id !== messageId),
+          _deletedMessageIds: [...new Set([...(c._deletedMessageIds ?? []), messageId])],
         }
         persistConversation(updated)
         return updated
@@ -1088,7 +1085,7 @@ export default function App() {
           if (m.id !== messageId) return m
           const count = m.variants.length
           const next = (m.selectedVariant + delta + count) % count
-          return { ...m, selectedVariant: next }
+          return updateMessage(m, { selectedVariant: next })
         })
         const updated: Conversation = { ...c, messages }
         persistConversation(updated)
@@ -1467,7 +1464,7 @@ export default function App() {
           if (c.id !== activeId) return c
           const messages = c.messages.map((m) =>
             m.id === tempId
-              ? { ...m, variants: [{ ...m.variants[0], toolCall: finalToolCall }] }
+              ? updateMessage(m, { variants: [{ ...m.variants[0], toolCall: finalToolCall }] })
               : m,
           )
           const updated: Conversation = { ...c, messages }
@@ -1487,7 +1484,7 @@ export default function App() {
           if (c.id !== activeId) return c
           const messages = c.messages.map((m) =>
             m.id === tempId
-              ? { ...m, variants: [{ ...m.variants[0], toolCall: errorToolCall }] }
+              ? updateMessage(m, { variants: [{ ...m.variants[0], toolCall: errorToolCall }] })
               : m,
           )
           const updated: Conversation = { ...c, messages }
