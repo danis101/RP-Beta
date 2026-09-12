@@ -1,4 +1,6 @@
 {
+  "navMobile": "Nawigacja główna",
+  "navMore": "Więcej opcji",
   "navChat": "Rozmowy",
   "navCards": "Karty postaci",
   "navSettings": "Ustawienia",
@@ -241,4 +243,3 @@
   "accountPasswordChanged": "Haslo zmienione.",
   "accountOtherSessionsHint": "Zmiana hasla wyloguje wszystkie inne sesje (telefon, druga przegladarka). Ta sesja pozostanie zalogowana."
 }
-

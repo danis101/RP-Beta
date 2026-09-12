@@ -73,8 +73,8 @@ export default function ChatList({
   const dot = apiDot[apiStatus.status]
 
   return (
-    <aside className="flex w-80 flex-col border-r border-edge bg-surface-light">
-      <div className="border-b border-edge px-4 pb-3 pt-4">
+    <aside className="flex min-h-0 w-full flex-col border-r border-edge bg-surface-light">
+      <div className="shrink-0 border-b border-edge px-4 pb-3 pt-4">
         <h2 className="mb-3 text-[17px] font-semibold text-[#f2f2f4]">{t('navChat')}</h2>
         <div className="relative">
           <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[#6a6a72]" />
@@ -87,7 +87,7 @@ export default function ChatList({
         </div>
       </div>
 
-      <div className="flex-1 space-y-1 overflow-y-auto p-2">
+      <div className="min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain p-2">
         {filtered.map((conv) => {
           const character = getCharacter(conv.characterId)
           if (!character) return null

@@ -117,7 +117,7 @@ export default function InputBar({
         </div>
       )}
 
-      <div className="flex items-end gap-2.5">
+      <div className="flex min-w-0 items-end gap-2 md:gap-2.5">
         {(visionEnabled || imageGenEnabled) && (
           <div className="relative" ref={plusRef}>
             <button
@@ -177,7 +177,7 @@ export default function InputBar({
             autoResize()
           }}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
+            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault()
               if (isGenerating) return
               handleSubmit()
@@ -185,7 +185,7 @@ export default function InputBar({
           }}
           placeholder={t('chatPlaceholder')}
           rows={1}
-          className="max-h-[200px] flex-1 resize-none rounded-2xl border border-[#2a2a31] bg-surface-dark px-4 py-2.5 text-[13.5px] leading-relaxed text-[#e8e8eb] outline-none transition-colors placeholder:text-[#75757f] focus:border-accent"
+          className="max-h-[min(200px,25dvh)] min-w-0 flex-1 resize-none rounded-2xl border border-[#2a2a31] bg-surface-dark px-3 py-2.5 text-base leading-relaxed text-[#e8e8eb] outline-none transition-colors placeholder:text-[#75757f] focus:border-accent md:px-4 md:text-[13.5px]"
         />
 
         {isGenerating ? (

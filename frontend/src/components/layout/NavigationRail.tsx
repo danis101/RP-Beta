@@ -1,4 +1,5 @@
-import { MessageSquare, Users, Settings, BookOpen, LogOut, ShieldCheck, RefreshCw } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { MessageSquare, Users, Settings, BookOpen, LogOut, ShieldCheck, RefreshCw, MoreHorizontal } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useI18n } from '../../i18n'
 import type { Persona } from '../../types'
@@ -15,7 +16,7 @@ interface NavItem {
 
 interface NavigationRailProps {
   activeView: AppView
-  onNavigate: (view: AppView) => void
+  onNavigate: (view: AppView, mobile?: boolean) => void
   persona: Persona
   onOpenPersonaManager: () => void
   onManualRefresh?: () => void
@@ -32,6 +33,22 @@ export default function NavigationRail({
 }: NavigationRailProps) {
   const { t } = useI18n()
   const { user, logout } = useAuth()
+  const [moreOpen, setMoreOpen] = useState(false)
+  const moreRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const closeOutside = (event: PointerEvent) => {
+      if (!moreRef.current?.contains(event.target as Node)) setMoreOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMoreOpen(false)
+    }
+    document.addEventListener('pointerdown', closeOutside)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [])
 
   const topItems: NavItem[] = [
     { id: 'chat', label: t('navChat'), icon: MessageSquare },
@@ -43,7 +60,7 @@ export default function NavigationRail({
     { id: 'settings', label: t('navSettings'), icon: Settings },
   ]
 
-  const renderButton = (item: NavItem) => {
+  const renderButton = (item: NavItem, mobile = false) => {
     const Icon = item.icon
     const isActive = item.id === activeView
 
@@ -51,8 +68,10 @@ export default function NavigationRail({
       <button
         key={item.id}
         title={item.label}
-        onClick={() => onNavigate(item.id)}
-        className={`flex h-11 w-11 items-center justify-center rounded-xl transition-colors ${
+        aria-label={item.label}
+        aria-current={isActive ? 'page' : undefined}
+        onClick={() => { setMoreOpen(false); onNavigate(item.id, mobile) }}
+        className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl transition-colors ${
           isActive
             ? 'bg-accent text-white'
             : 'text-[#8a8a94] hover:bg-surface-light hover:text-white'
@@ -67,7 +86,8 @@ export default function NavigationRail({
   const personaAvatarSrc = persona?.avatarBlobId ?? persona?.avatar
 
   return (
-    <nav className="flex w-16 flex-col items-center gap-2 border-r border-edge bg-surface py-4">
+    <>
+    <nav className="hidden min-h-0 w-16 shrink-0 flex-col items-center gap-2 overflow-y-auto border-r border-edge bg-surface py-4 md:flex">
       {/* Persona u gory */}
       <button
         onClick={onOpenPersonaManager}
@@ -77,10 +97,10 @@ export default function NavigationRail({
         <Avatar src={personaAvatarSrc} name={persona?.name ?? '?'} size="md" />
       </button>
 
-      {topItems.map(renderButton)}
+      {topItems.map((item) => renderButton(item))}
 
       <div className="mt-auto flex flex-col items-center gap-2">
-        {bottomItems.map(renderButton)}
+        {bottomItems.map((item) => renderButton(item))}
 
         {onManualRefresh && (
           <button
@@ -114,5 +134,35 @@ export default function NavigationRail({
         </button>
       </div>
     </nav>
+    <nav aria-label={t('navMobile')} className="mobile-nav relative order-last z-30 flex shrink-0 items-center justify-around border-t border-edge bg-surface pt-1 md:hidden">
+      {[...topItems, ...bottomItems].map((item) => renderButton(item, true))}
+      <div ref={moreRef}>
+        <button
+          aria-label={t('navMore')}
+          aria-expanded={moreOpen}
+          aria-controls="mobile-nav-more"
+          onClick={() => setMoreOpen((open) => !open)}
+          className="flex h-11 w-11 items-center justify-center rounded-xl text-[#8a8a94] hover:bg-surface-light"
+        ><MoreHorizontal size={22} /></button>
+        {moreOpen && (
+          <div id="mobile-nav-more" className="absolute bottom-full right-2 mb-2 max-h-[60dvh] w-64 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-xl border border-edge bg-surface p-1 shadow-xl">
+            <button onClick={() => { setMoreOpen(false); onOpenPersonaManager() }} className="flex min-h-11 w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm hover:bg-surface-light">
+              <Avatar src={personaAvatarSrc} name={persona?.name ?? '?'} size="sm" />
+              <span className="truncate">{persona?.name ?? 'Persona'}</span>
+            </button>
+            {onManualRefresh && <button disabled={refreshing} onClick={() => { setMoreOpen(false); onManualRefresh() }} className="flex min-h-11 w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm hover:bg-surface-light disabled:opacity-50">
+              <RefreshCw size={18} className={refreshing ? 'animate-spin' : ''} />{t('navRefresh')}
+            </button>}
+            {user?.isAdmin && <button onClick={() => { setMoreOpen(false); window.location.hash = '#/admin' }} className="flex min-h-11 w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm hover:bg-surface-light">
+              <ShieldCheck size={18} />{t('navAdmin')}
+            </button>}
+            <button onClick={logout} className="flex min-h-11 w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-[#e05b5b] hover:bg-surface-light">
+              <LogOut size={18} />{t('authLogout')}
+            </button>
+          </div>
+        )}
+      </div>
+    </nav>
+    </>
   )
 }

@@ -29,10 +29,10 @@ export default function MessageActions({
   onPrevVariant,
   onNextVariant,
 }: MessageActionsProps) {
-  const iconClass = 'rounded-md p-1 text-[#6a6a72] transition-colors hover:bg-surface hover:text-white'
+  const iconClass = 'flex h-10 w-10 items-center justify-center rounded-md p-1 text-[#8a8a94] transition-colors hover:bg-surface hover:text-white md:h-auto md:w-auto'
 
   return (
-    <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+    <div className="message-actions flex max-w-full flex-wrap items-center gap-0.5 transition-opacity md:opacity-0 md:group-hover:opacity-100 focus-within:opacity-100">
       <button onClick={onEdit} title="Edytuj" className={iconClass}>
         <Pencil size={13} />
       </button>

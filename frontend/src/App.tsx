@@ -89,6 +89,7 @@ export default function App() {
 
   const [view, setView] = useState<AppView>('chat')
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [mobileListOpen, setMobileListOpen] = useState(false)
   const [ready, setReady] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
@@ -284,12 +285,14 @@ export default function App() {
     }
   }
 
-  const handleNavigate = (nextView: AppView) => {
+  const handleNavigate = (nextView: AppView, mobile = false) => {
     if (nextView === 'chat' && view === 'chat') {
-      setSidebarOpen((prev) => !prev)
+      if (mobile) setMobileListOpen((prev) => !prev)
+      else setSidebarOpen((prev) => !prev)
     } else {
       setView(nextView)
       setSidebarOpen(true)
+      setMobileListOpen(false)
     }
     if (window.location.hash) window.location.hash = ''
   }
@@ -320,6 +323,7 @@ export default function App() {
     }
     setView('chat')
     setSidebarOpen(true)
+    setMobileListOpen(false)
   }
 
   const activeConversation = conversations.find((c) => c.id === activeId)
@@ -1543,7 +1547,7 @@ export default function App() {
 
   if (route === 'admin' && user?.isAdmin) {
     return (
-      <div className="relative flex h-screen overflow-hidden bg-surface-dark">
+      <div className="app-shell relative flex h-full min-h-0 flex-col overflow-hidden bg-surface-dark md:flex-row">
         <ConflictBanners />
         <NavigationRail
           activeView={view}
@@ -1559,7 +1563,7 @@ export default function App() {
   }
 
   return (
-    <div className="relative flex h-screen overflow-hidden bg-surface-dark">
+    <div className="app-shell relative flex h-full min-h-0 flex-col overflow-hidden bg-surface-dark md:flex-row">
       <ConflictBanners />
       <NavigationRail
         activeView={view}
@@ -1570,20 +1574,27 @@ export default function App() {
         refreshing={refreshing}
       />
 
+      <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
       {view === 'chat' ? (
         <>
-          {sidebarOpen && (
+          <div className={`${mobileListOpen || !activeId ? 'flex' : 'hidden'} min-h-0 w-full shrink-0 ${sidebarOpen ? 'md:flex' : 'md:hidden'} md:w-80`}>
             <ChatList
               characters={characters}
               conversations={conversations}
               personas={personas}
               defaultPersonaId={settings.defaultPersonaId}
               activeId={activeId ?? ''}
-              onSelect={setActiveId}
+              onSelect={(id) => {
+                setActiveId(id)
+                setMobileListOpen(false)
+              }}
             />
-          )}
+          </div>
           {activeConversation && activeCharacter && activePersona ? (
+            <div className={`${mobileListOpen ? 'hidden' : 'flex'} min-h-0 min-w-0 flex-1 md:flex`}>
             <ChatView
+              conversationId={activeConversation.id}
+              onOpenConversations={() => setMobileListOpen(true)}
               character={activeCharacter}
               messages={activeConversation.messages}
               persona={activePersona}
@@ -1628,8 +1639,9 @@ export default function App() {
               imageGenEnabled={settings.imageGenEnabled}
               onGenerateImage={handleGenerateImage}
             />
+            </div>
           ) : (
-            <div className="flex flex-1 items-center justify-center bg-surface-dark text-[13px] text-[#75757f]">
+            <div className={`${mobileListOpen || !activeId ? 'hidden' : 'flex'} min-w-0 flex-1 items-center justify-center bg-surface-dark text-[13px] text-[#75757f] md:flex`}>
               {t('chatNoConversation')}
             </div>
           )}
@@ -1654,6 +1666,7 @@ export default function App() {
           onDeleteStyle={handleDeleteStyle}
         />
       )}
+      </div>
 
       {personaManagerOpen && activePersona && (
         <PersonaManager

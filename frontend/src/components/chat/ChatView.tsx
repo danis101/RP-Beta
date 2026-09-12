@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { X, MoreVertical, Trash2, Check, X as XIcon, UserRound, Palette, BookOpen, Eye, Database, RotateCcw, Wand2 } from 'lucide-react'
+import { X, MoreVertical, Trash2, Check, X as XIcon, UserRound, Palette, BookOpen, Eye, Database, RotateCcw, Wand2, ArrowLeft } from 'lucide-react'
 import type { CharacterCard, ChatMessage, Persona, StylePreset, Lorebook, MessageAttachment } from '../../types'
 import { useI18n } from '../../i18n'
 import { getContent } from '../../lib/messages'
@@ -12,6 +12,8 @@ import ConfirmDialog from './ConfirmDialog'
 import ImageStyleDialog from './ImageStyleDialog'
 
 interface ChatViewProps {
+  conversationId: string
+  onOpenConversations: () => void
   character: CharacterCard
   messages: ChatMessage[]
   persona: Persona
@@ -56,6 +58,8 @@ interface ChatViewProps {
 const SWIPE_THRESHOLD = 55
 
 export default function ChatView({
+  conversationId,
+  onOpenConversations,
   character,
   messages,
   persona,
@@ -103,9 +107,10 @@ export default function ChatView({
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editDraft, setEditDraft] = useState('')
   const menuRef = useRef<HTMLDivElement>(null)
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const messagesRef = useRef<HTMLDivElement>(null)
+  const followBottomRef = useRef(true)
 
-  const touchRef = useRef<{ id: string; x: number } | null>(null)
+  const touchRef = useRef<{ id: string; x: number; y: number } | null>(null)
 
   const tokenContext: TokenContext = {
     charName: character.name,
@@ -114,8 +119,31 @@ export default function ChatView({
   }
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    followBottomRef.current = true
+    const list = messagesRef.current
+    if (list) list.scrollTop = list.scrollHeight
+  }, [conversationId])
+
+  useEffect(() => {
+    const list = messagesRef.current
+    if (list && followBottomRef.current) list.scrollTop = list.scrollHeight
   }, [messages.length, streamingText])
+
+  useEffect(() => {
+    const list = messagesRef.current
+    if (!list) return
+    const observer = new ResizeObserver(() => {
+      const focused = document.activeElement
+      if (focused instanceof HTMLTextAreaElement && list.contains(focused)) {
+        const bounds = list.getBoundingClientRect()
+        const field = (focused.parentElement ?? focused).getBoundingClientRect()
+        if (field.bottom > bounds.bottom) list.scrollTop += field.bottom - bounds.bottom
+        else if (field.top < bounds.top) list.scrollTop += field.top - bounds.top
+      } else if (followBottomRef.current) list.scrollTop = list.scrollHeight
+    })
+    observer.observe(list)
+    return () => observer.disconnect()
+  }, [])
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -156,9 +184,12 @@ export default function ChatView({
   const showBottomStreaming = !!streamingText && !replacingMessageId
 
   return (
-    <main className="flex min-w-0 flex-1 flex-col bg-surface-dark">
+    <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-surface-dark">
       {/* Naglowek */}
-      <div className="flex items-center gap-3 border-b border-edge bg-surface px-5 py-4">
+      <div className="flex shrink-0 items-center gap-2 border-b border-edge bg-surface px-3 py-2 md:gap-3 md:px-5 md:py-4">
+        <button onClick={onOpenConversations} aria-label={t('navChat')} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-[#b8bdd0] hover:bg-surface-light md:hidden">
+          <ArrowLeft size={20} />
+        </button>
         <Avatar src={character.portraitBlobId ?? character.portrait} name={character.name} size="sm" />
         <div className="min-w-0 flex-1">
           <h1 className="truncate text-[14.5px] font-semibold text-[#f2f2f4]">{character.name}</h1>
@@ -181,7 +212,7 @@ export default function ChatView({
               setLorebookMenuOpen(false)
             }}
             title={t('chatMenuOptions')}
-            className={`rounded-lg p-2 transition-colors ${
+            className={`flex h-11 w-11 items-center justify-center rounded-lg p-2 transition-colors md:h-auto md:w-auto ${
               menuOpen ? 'bg-surface-light text-white' : 'text-[#8a8a94] hover:bg-surface-light hover:text-white'
             }`}
           >
@@ -384,7 +415,7 @@ export default function ChatView({
 
       {/* Summarizer – wyswietlanie podsumowania */}
       {showSummary && summaryText && (
-        <div className="mx-5 mt-3 flex items-start gap-2 rounded-xl border border-[#252b45] bg-[#161a2a] px-4 py-3.5">
+        <div className="mx-3 mt-2 flex max-h-[20%] shrink-0 items-start gap-2 overflow-y-auto rounded-xl border border-[#252b45] bg-[#161a2a] px-3 py-2 md:mx-5 md:mt-3 md:px-4 md:py-3.5">
           <p className="flex-1 text-[12.5px] leading-relaxed text-[#b8bdd0]">{summaryText}</p>
           <button
             onClick={onCloseSummary}
@@ -396,7 +427,18 @@ export default function ChatView({
       )}
 
       {/* Wiadomosci */}
-      <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-5 py-5">
+      <div
+        ref={messagesRef}
+        onLoadCapture={() => {
+          const list = messagesRef.current
+          if (list && followBottomRef.current) list.scrollTop = list.scrollHeight
+        }}
+        onScroll={(event) => {
+          const list = event.currentTarget
+          if (list.clientHeight > 0) followBottomRef.current = list.scrollHeight - list.scrollTop - list.clientHeight < 80
+        }}
+        className="chat-messages flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-x-hidden overflow-y-auto overscroll-contain px-3 py-3 md:px-5 md:py-5"
+      >
         {messages.map((msg, index) => {
           const isLast = index === messages.length - 1
           const canRegenerate = msg.role === 'assistant' || isLast
@@ -407,10 +449,10 @@ export default function ChatView({
           return (
             <div
               key={msg.id}
-              className={`group flex touch-pan-y ${isUser ? 'justify-end' : 'justify-start'}`}
+              className={`group flex shrink-0 touch-pan-y ${isUser ? 'justify-end' : 'justify-start'}`}
               onTouchStart={(e) => {
                 if (msg.role !== 'assistant') return
-                touchRef.current = { id: msg.id, x: e.touches[0].clientX }
+                touchRef.current = { id: msg.id, x: e.touches[0].clientX, y: e.touches[0].clientY }
               }}
               onTouchEnd={(e) => {
                 if (msg.role !== 'assistant') return
@@ -418,6 +460,8 @@ export default function ChatView({
                 touchRef.current = null
                 if (!start || start.id !== msg.id) return
                 const delta = e.changedTouches[0].clientX - start.x
+                const deltaY = e.changedTouches[0].clientY - start.y
+                if (Math.abs(delta) <= Math.abs(deltaY)) return
                 if (Math.abs(delta) < SWIPE_THRESHOLD) return
                 if (isTyping || isReplacing) return
                 if (delta > 0) {
@@ -428,24 +472,24 @@ export default function ChatView({
               }}
             >
               <div
-                className={`flex max-w-[90%] min-w-0 flex-col gap-1 ${
+                className={`flex max-w-[90%] min-w-0 flex-col gap-1 ${editing ? 'w-full' : ''} ${
                   isUser ? 'items-end' : 'items-start'
                 }`}
               >
                 {editing ? (
-                  <div className="w-full min-w-[300px] space-y-1.5">
+                  <div className="w-full min-w-0 space-y-1.5 md:min-w-[300px]">
                     <textarea
                       value={editDraft}
                       onChange={(e) => setEditDraft(e.target.value)}
                       rows={5}
                       autoFocus
-                      className="w-full min-w-[300px] resize-y rounded-xl border border-accent bg-surface px-4 py-3 text-[13.5px] leading-relaxed text-[#e8e8eb] outline-none"
+                      className="max-h-[30dvh] w-full min-w-0 resize-y rounded-xl border border-accent bg-surface px-3 py-3 text-base leading-relaxed text-[#e8e8eb] outline-none md:max-h-none md:min-w-[300px] md:px-4 md:text-[13.5px]"
                     />
                     <div className="flex justify-end gap-1.5">
-                      <button onClick={cancelEdit} className="rounded-md p-1 text-[#8a8a94] hover:bg-surface-light hover:text-white">
+                      <button onClick={cancelEdit} aria-label={t('editorCancel')} className="flex h-10 w-10 items-center justify-center rounded-md p-1 text-[#8a8a94] hover:bg-surface-light hover:text-white md:h-auto md:w-auto">
                         <XIcon size={14} />
                       </button>
-                      <button onClick={commitEdit} className="rounded-md p-1 text-accent hover:bg-surface-light">
+                      <button onClick={commitEdit} aria-label={t('editorSave')} className="flex h-10 w-10 items-center justify-center rounded-md p-1 text-accent hover:bg-surface-light md:h-auto md:w-auto">
                         <Check size={14} />
                       </button>
                     </div>
@@ -483,7 +527,7 @@ export default function ChatView({
         })}
 
         {showBottomStreaming && (
-          <div className="flex justify-start">
+          <div className="flex shrink-0 justify-start">
             <div className="flex max-w-[90%] min-w-0 flex-col gap-1 items-start">
               <ChatBubble
                 message={{
@@ -513,12 +557,14 @@ export default function ChatView({
           </div>
         )}
 
-        <div ref={bottomRef} />
       </div>
 
-      <div className="shrink-0 px-5 pb-5 pt-1">
+      <div className="shrink-0 px-3 pb-2 pt-1 md:px-5 md:pb-5">
         <InputBar
-          onSend={onSend}
+          onSend={(text, attachments) => {
+            followBottomRef.current = true
+            onSend(text, attachments)
+          }}
           onStop={onStop}
           isGenerating={isTyping || !!streamingText}
           visionEnabled={visionEnabled}
@@ -552,4 +598,3 @@ export default function ChatView({
 }
 
 // === END OF FILE ===
-

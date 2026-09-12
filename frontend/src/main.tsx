@@ -11,6 +11,7 @@ import { SettingsProvider } from './context/SettingsContext'
 import { ConflictProvider } from './context/ConflictContext'
 import LoginScreen from './components/auth/LoginScreen'
 import './index.css'
+import { useViewportHeight } from './lib/useViewportHeight'
 
 /**
  * Router sesji:
@@ -22,6 +23,7 @@ import './index.css'
  * moga wystapic konflikty sync.
  */
 function Root() {
+  useViewportHeight()
   const { t } = useI18n()
   const { user, loading } = useAuth()
 

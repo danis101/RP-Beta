@@ -1,4 +1,6 @@
 {
+  "navMobile": "Main navigation",
+  "navMore": "More options",
   "navChat": "Chats",
   "navCards": "Character Cards",
   "navSettings": "Settings",
@@ -241,4 +243,3 @@
   "accountPasswordChanged": "Password changed.",
   "accountOtherSessionsHint": "Changing your password will sign out all other sessions (phone, second browser). This session stays signed in."
 }
-
