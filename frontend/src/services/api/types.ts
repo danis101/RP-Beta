@@ -8,6 +8,8 @@ export interface SendMessageParams {
   temperature?: number
   systemPrompt?: string
   signal?: AbortSignal
+  /** Oddzielny reasoning w odpowiedzi bez streamingu; brak zachowuje tekstowy fallback. */
+  onThinking?: (text: string) => void
   /** Narzedzia dozwolone dla tego wywolania. Brak/pusta lista = bez narzedzi. */
   tools?: ToolDefinition[]
 }

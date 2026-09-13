@@ -592,6 +592,7 @@ export default function App() {
           temperature: activeProfile?.sampler.temperature,
           signal: controller.signal,
           tools,
+          onThinking: (text) => { thinking += text },
         })
         try {
           const parsed = JSON.parse(result)

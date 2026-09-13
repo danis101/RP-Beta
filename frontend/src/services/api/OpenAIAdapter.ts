@@ -1,6 +1,7 @@
 import type { ApiAdapter, SendMessageParams, StreamCallbacks, ListModelsResult, ModelInfo } from './types'
 import type { ApiProfile, APIToolCall } from '../../types'
 import { getToken } from '../sync/client'
+import { ReasoningParser, readReasoning } from './reasoning'
 
 export interface OpenAIConfig {
   baseUrl: string
@@ -150,28 +151,25 @@ export class OpenAIAdapter implements ApiAdapter {
     const choice = data.choices?.[0]
     const message = choice?.message
 
+    let content = ''
+    let reasoning = readReasoning(message)
+    const parser = new ReasoningParser(text => { content += text }, text => { reasoning += text })
+    parser.push(typeof message?.content === 'string' ? message.content : '')
+    parser.finish()
+    if (reasoning) params.onThinking?.(reasoning)
+
     // Tool calls: some backends return them as content but most use this field.
     if (message?.tool_calls && message.tool_calls.length > 0) {
       return JSON.stringify({
-        content: message.content || '',
+        content,
         tool_calls: message.tool_calls,
       })
     }
 
-    const content = typeof message?.content === 'string' ? message.content : ''
-    const reasoning =
-      typeof message?.reasoning_content === 'string'
-        ? message.reasoning_content
-        : typeof message?.reasoning === 'string'
-          ? message.reasoning
-          : typeof message?.thinking === 'string'
-            ? message.thinking
-            : ''
-
     // Fallback: model spent its entire token budget on reasoning and produced
     // no content. Use reasoning as content so downstream logic does not
     // silently get an empty string. Not perfect, but avoids silent failure.
-    if (!content.trim() && reasoning.trim()) {
+    if (!params.onThinking && !content.trim() && reasoning.trim()) {
       if (import.meta.env.DEV) {
         console.warn(
           '[OpenAIAdapter] content pusty (model zużył budżet na reasoning). ' +
@@ -238,6 +236,7 @@ export class OpenAIAdapter implements ApiAdapter {
     let buffer = ''
     let toolCalls: APIToolCall[] = []
     let toolCallInProgress: APIToolCall | null = null
+    const parser = new ReasoningParser(callbacks.onToken, text => callbacks.onThinking?.(text))
 
     try {
       while (true) {
@@ -260,6 +259,7 @@ export class OpenAIAdapter implements ApiAdapter {
             continue
           }
           if (payload === '[DONE]') {
+            parser.finish()
             if (toolCalls.length > 0 && callbacks.onToolCalls) {
               callbacks.onToolCalls(toolCalls)
             }
@@ -280,11 +280,8 @@ export class OpenAIAdapter implements ApiAdapter {
           }
           const delta = json.choices?.[0]?.delta
 
-          if (delta?.reasoning_content && callbacks.onThinking) {
-            callbacks.onThinking(delta.reasoning_content)
-          } else if ((delta?.reasoning || delta?.thinking) && callbacks.onThinking) {
-            callbacks.onThinking(delta.reasoning ?? delta.thinking)
-          }
+          const reasoning = readReasoning(delta)
+          if (reasoning) callbacks.onThinking?.(reasoning)
 
           if (delta?.tool_calls) {
             for (const tc of delta.tool_calls) {
@@ -307,12 +304,13 @@ export class OpenAIAdapter implements ApiAdapter {
           }
 
           if (delta?.content) {
-            callbacks.onToken(delta.content)
+            parser.push(delta.content)
           }
         }
         if (done) break
       }
 
+      parser.finish()
       if (toolCalls.length > 0 && callbacks.onToolCalls) {
         callbacks.onToolCalls(toolCalls)
       }
