@@ -44,8 +44,8 @@ export function setToken(token: string | null): void {
  * z serwera (albo null jesli zostala usunieta w miedzyczasie).
  */
 export class ConflictError<T = unknown> extends Error {
-  constructor(public current: T | null) {
-    super('Konflikt: encja zostala zmieniona na innym urzadzeniu')
+  constructor(public current: T | null, message = 'Konflikt: encja zostala zmieniona na innym urzadzeniu') {
+    super(message)
     this.name = 'ConflictError'
   }
 }
@@ -119,8 +119,8 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
   }
 
   if (resp.status === 409) {
-    const payload = (await resp.json().catch(() => ({}))) as { current?: unknown }
-    throw new ConflictError(payload.current ?? null)
+    const payload = (await resp.json().catch(() => ({}))) as { current?: unknown; error?: string }
+    throw new ConflictError(payload.current ?? null, payload.error)
   }
 
   if (!resp.ok) {
@@ -167,4 +167,3 @@ export async function changeMyPassword(currentPassword: string, newPassword: str
     setToken(resp.token)
   }
 }
-

@@ -10,6 +10,7 @@ import InputBar from './InputBar'
 import MessageActions from './MessageActions'
 import ConfirmDialog from './ConfirmDialog'
 import ImageStyleDialog from './ImageStyleDialog'
+import type { GenerationJob } from '../../services/sync/generation'
 
 interface ChatViewProps {
   conversationId: string
@@ -19,6 +20,8 @@ interface ChatViewProps {
   persona: Persona
   isTyping: boolean
   streamingText: string
+  generationNotice?: string
+  generationResult?: GenerationJob | null
   replacingMessageId?: string | null
   onSend: (text: string, attachments?: MessageAttachment[]) => void
   onStop: () => void
@@ -65,6 +68,8 @@ export default function ChatView({
   persona,
   isTyping,
   streamingText,
+  generationNotice,
+  generationResult,
   replacingMessageId = null,
   onSend,
   onStop,
@@ -560,6 +565,17 @@ export default function ChatView({
       </div>
 
       <div className="shrink-0 px-3 pb-2 pt-1 md:px-5 md:pb-5">
+        {generationNotice && <p role="status" className="mb-2 text-xs text-amber-300">{generationNotice}</p>}
+        {generationResult && (
+          <details key={generationResult.id} className="mb-2 rounded border border-amber-800 p-2 text-xs text-amber-200">
+            <summary className="cursor-pointer">Zadanie: {({ failed: 'błąd', cancelled: 'zatrzymane', interrupted: 'przerwane', conflict: 'konflikt zapisu' } as Record<string, string>)[generationResult.status] ?? generationResult.status} — zapisany wynik</summary>
+            <div className="max-h-40 overflow-auto whitespace-pre-wrap break-words pt-2">
+              {generationResult.error && <p>{generationResult.error}</p>}
+              <p>{generationResult.content || 'Brak zapisanego tekstu odpowiedzi.'}</p>
+              {generationResult.thinking && <details><summary>Reasoning</summary>{generationResult.thinking}</details>}
+            </div>
+          </details>
+        )}
         <InputBar
           onSend={(text, attachments) => {
             followBottomRef.current = true

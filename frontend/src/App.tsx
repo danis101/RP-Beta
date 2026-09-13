@@ -26,6 +26,8 @@ import {
   uploadBlobFromBlob,
 } from './services/sync'
 import { ConflictError } from './services/sync/client'
+import { useGenerationJob } from './hooks/useGenerationJob'
+import { isGenerationActive, type StartGeneration } from './services/sync/generation'
 import { getBlobAsDataUrl } from './lib/blobCache'
 import { mergeConversations } from './lib/conversationMerge'
 import { prepareChatMessages } from './lib/chatCompatibility'
@@ -328,6 +330,9 @@ export default function App() {
   }
 
   const activeConversation = conversations.find((c) => c.id === activeId)
+  const serverGeneration = useGenerationJob(ready ? activeId : null, user?.id, (remote) => {
+    setConversations(prev => prev.map(local => local.id === remote.id ? mergeConversations(local, remote) : local))
+  })
   const activeCharacter = activeConversation
     ? characters.find((c) => c.id === activeConversation.characterId)
     : undefined
@@ -353,7 +358,7 @@ export default function App() {
   const persistConversationInternal = async (
     conversation: Conversation,
     isRetry: boolean,
-  ): Promise<void> => {
+  ): Promise<Conversation | undefined> => {
     try {
       const saved = await conversationsApi.update(conversation)
       setConversations((prev) =>
@@ -367,7 +372,7 @@ export default function App() {
             : c,
         ),
       )
-      return
+      return saved
     } catch (err) {
       if (!(err instanceof ConflictError)) {
         console.warn('Zapis konwersacji do serwera nie powiodl sie:', err)
@@ -400,11 +405,15 @@ export default function App() {
 
       const merged = mergeConversations(conversation, remote)
       setConversations((prev) => prev.map((c) => (c.id === merged.id ? merged : c)))
-      await persistConversationInternal(merged, true)
+      return persistConversationInternal(merged, true)
     }
   }
 
   const handleStop = () => {
+    void serverGeneration.cancel()
+    if (isGenerationActive(serverGeneration.job)) {
+      return
+    }
     abortRef.current?.abort()
   }
 
@@ -524,6 +533,7 @@ export default function App() {
     extraMessages?: OpenAIMessage[],
     toolResults?: WebSearchResult[],
     toolLabel?: string,
+    savedConversation?: Conversation,
   ) => {
     const controller = new AbortController()
     abortRef.current = controller
@@ -537,6 +547,11 @@ export default function App() {
     let toolCalls: APIToolCall[] = []
 
     const baseMessages = await buildMessages(history)
+    if (controller.signal.aborted) {
+      setIsTyping(false)
+      setReplacingMessageId(null)
+      return
+    }
     const messages = prepareChatMessages(
       extraMessages ? [...baseMessages, ...extraMessages] : baseMessages,
       activeCharacter?.name ?? 'Assistant',
@@ -545,6 +560,37 @@ export default function App() {
 
     const useStreaming = activeProfile?.streamingEnabled ?? true
     const tools = buildToolDeclarations(settings)
+    const conversation = savedConversation ?? activeConversation
+    // Keep tool, vision and automatic-summary workflows on their existing path
+    // until their complete chain has a server owner as well.
+    const serverEligible = conversation && activeProfile?.baseUrl.trim() && !tools.length &&
+      !settings.summarizerEnabled && !extraMessages && !toolResults && mode !== 'replace' &&
+      (mode === 'regenerate' || conversation.messages[conversation.messages.length - 1]?.id === targetMessageId) &&
+      messages.every(message => typeof message.content === 'string' &&
+        ['system', 'user', 'assistant'].includes(message.role) && !message.tool_calls && !message.tool_call_id)
+    if (serverEligible) {
+      try {
+        const saved = savedConversation ?? await persistConversationInternal(conversation, false)
+        if (controller.signal.aborted) return
+        if (!saved || saved._serverUpdatedAt == null) throw new Error('Nie udało się zapisać rozmowy. Generowanie nie zostało uruchomione.')
+        // A conflict merge can change history. Do not send a prompt built from
+        // a different conversation version; let the user review and retry.
+        if (JSON.stringify(saved.messages) !== JSON.stringify(conversation.messages)) {
+          throw new Error('Rozmowa zmieniła się podczas zapisu. Sprawdź wiadomości i ponów generowanie.')
+        }
+        await serverGeneration.start({ id: crypto.randomUUID(), conversationId: saved.id,
+          targetMessageId, mode: mode as 'append' | 'regenerate', expectedUpdatedAt: saved._serverUpdatedAt,
+          profileId: activeProfile!.id, messages: messages as StartGeneration['messages'] })
+      } catch (error) {
+        pushBanner({ title: 'Generowanie nie zostało uruchomione', description: error instanceof Error ? error.message : String(error) })
+      } finally {
+        setIsTyping(false)
+        setStreamingText('')
+        setReplacingMessageId(null)
+        abortRef.current = null
+      }
+      return
+    }
     const allowedToolCalls = (calls: APIToolCall[]) => calls.filter(
       (call) => tools.some((tool) => tool.function.name === call.function.name),
     )
@@ -872,6 +918,10 @@ export default function App() {
 
   const handleSend = async (text: string, attachments?: MessageAttachment[]) => {
     if (!activeConversation || !activeCharacter) return
+    if (isTyping || toolRunning || serverGeneration.busy) return
+    setIsTyping(true)
+    const savingController = new AbortController()
+    abortRef.current = savingController
 
     const userMessage = makeMessage(crypto.randomUUID(), 'user', text)
     if (attachments && attachments.length > 0) {
@@ -885,9 +935,14 @@ export default function App() {
     }
 
     setConversations((prev) => prev.map((c) => (c.id === activeId ? updated : c)))
-    persistConversation(updated)
-
-    await runCompletion(updated.messages, userMessage.id, 'append')
+    const saved = await persistConversationInternal(updated, false)
+    if (savingController.signal.aborted) { setIsTyping(false); return }
+    if (!saved) {
+      setIsTyping(false)
+      pushBanner({ title: 'Nie zapisano wiadomości', description: 'Generowanie nie zostało uruchomione. Sprawdź połączenie i ponów zapis rozmowy.' })
+      return
+    }
+    await runCompletion(saved.messages, userMessage.id, 'append', undefined, undefined, undefined, saved)
   }
 
   const appendVariant = (messageId: string, variant: MessageVariant): number => {
@@ -1016,6 +1071,7 @@ export default function App() {
   }
 
   const handleRegenerate = async (messageId: string) => {
+    if (isTyping || toolRunning || serverGeneration.busy) return
     if (!activeConversation) return
     const index = activeConversation.messages.findIndex((m) => m.id === messageId)
     if (index === -1) return
@@ -1610,9 +1666,13 @@ export default function App() {
               activeStyleId={activeStyleId}
               activeImageStyleId={activeConversation.imageStyleId}
               activeLorebookIds={activeConversation.lorebookIds ?? []}
-              isTyping={isTyping || toolRunning}
-              streamingText={streamingText}
-              replacingMessageId={replacingMessageId}
+              isTyping={isTyping || toolRunning || serverGeneration.busy}
+              streamingText={isGenerationActive(serverGeneration.job) ? (activeProfile?.streamingEnabled === false ? '' : serverGeneration.job!.content) : streamingText}
+              replacingMessageId={isGenerationActive(serverGeneration.job) && serverGeneration.job?.mode === 'regenerate' ? serverGeneration.job.targetMessageId : replacingMessageId}
+              generationNotice={serverGeneration.notice || (isGenerationActive(serverGeneration.job)
+                ? 'Generowanie na serwerze — możesz wygasić ekran.'
+                : isTyping || toolRunning ? 'Ten workflow działa jeszcze w przeglądarce — pozostaw ją aktywną.' : '')}
+              generationResult={serverGeneration.job && !isGenerationActive(serverGeneration.job) && serverGeneration.job.status !== 'succeeded' ? serverGeneration.job : null}
               onSend={handleSend}
               onStop={handleStop}
               onEditMessage={handleEditMessage}

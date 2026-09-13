@@ -4,7 +4,7 @@
 
 Telefon wysyła polecenie rozpoczęcia generowania, a serwer prowadzi je i zapisuje wynik niezależnie od połączenia przeglądarki. Po wybudzeniu frontend odczytuje bieżący stan. Nie potrzebujemy aplikacji natywnej do osiągnięcia tego celu.
 
-Stan na 2026-09-13: **backend zadań tekstowych jest zaimplementowany; frontend jeszcze niepodłączony**. Odczyt SSE i reasoning jest wydzielony do `shared/llm`. Nowe API potrafi prowadzić zadanie niezależnie od żądania HTTP, zapisywać postęp i opublikować odpowiedź w rozmowie. Obecny interfejs nadal uruchamia generowanie i narzędzia w przeglądarce, więc na tym etapie sen telefonu nadal może przerwać generację rozpoczętą przez UI. Runtime Bun/Docker wymaga sprawdzenia na serwerze.
+Stan na 2026-09-13: **frontend podłączony do zadań tekstowych**. Dotyczy generacji i regeneracji tekstu przez skonfigurowany profil API, przy wyłączonych narzędziach i automatycznych podsumowaniach, bez multimodalnego wejścia. Regeneracja od starszej wiadomości użytkownika zachowuje ścieżkę przeglądarkową. Obrazy, wyszukiwanie i podsumowania wymagają przeniesienia całego workflow; niczego nie wyłączamy automatycznie. Interfejs pokazuje, gdzie trwa wykonanie. Runtime Bun/Docker wymaga sprawdzenia na serwerze.
 
 ## Ustalenia z przeglądu kodu
 
@@ -20,7 +20,7 @@ Stan na 2026-09-13: **backend zadań tekstowych jest zaimplementowany; frontend 
 
 1. **Wspólny odczyt odpowiedzi — wykonany.** Wydzielenie istniejącego parsera SSE, reasoning i typów callbacków z części przeglądarkowej. Dotychczasowe żądania, prompty, narzędzia i sposób zapisu pozostają takie same. Docker kopiuje moduł wspólny do etapu budowania i obrazu serwera.
 2. **Trwałe zadanie tekstowe — zaimplementowane, do weryfikacji na Bun/Docker.** Addytywna tabela SQLite, rozpoczęcie/odczyt/anulowanie zadania, identyfikator ponowienia oraz transakcyjny zapis wyniku do właściwej rozmowy. Testy SQLite i wykonawcy uruchomiono lokalnie w Node 24 z kontrolowanym strumieniem, bez modeli i usług zewnętrznych.
-3. **Podłączenie frontendu.** Start zadania zamiast długiego żądania modelu; wyświetlanie postępu oraz odczyt stanu po ponownym połączeniu. Sprawdzić generację, regenerację wariantu i świadome zatrzymanie. Etap tekstowy nie może sugerować, że workflow obrazów już działa w tle.
+3. **Podłączenie frontendu — wykonane dla tekstu, czeka na test wdrożenia.** Start zadania, postęp, odczyt po powrocie do rozmowy, osobny Stop i prezentacja zachowanego wyniku przy błędzie/konflikcie/przerwaniu. Logika obserwacji jest w `useGenerationJob`, poza App.tsx.
 4. **Narzędzia i obrazy.** Przenieść cały obecny łańcuch, wraz z refinerem, wynikiem wyszukiwania, obsługą odpowiedzi mostka, blobami i regeneracją na zapisanym prompcie. Zachować filtrowanie narzędzi i kontrolę uprawnień przed wykonaniem.
 5. **Domknięcie migracji.** Dwa urządzenia, edycje/usunięcia podczas generowania, przerwanie procesu i rekoncyliacja stanu. Dopiero po tych testach usuwać zastąpione ścieżki wykonania. Podsumowania wymagają osobnego uwzględnienia; nie przenosić przy okazji błędu granicy podsumowania.
 
@@ -72,7 +72,7 @@ Przykład body rozpoczęcia (identyfikatory i wersja muszą odpowiadać zapisane
 }
 ```
 
-`regenerate` wskazuje istniejącą wiadomość assistant i dodaje jej nowy wariant. Frontend w kolejnym etapie musi najpierw zakończyć zapis wiadomości użytkownika i przekazać gotowy prompt po obecnej normalizacji. Backend nie odbudowuje promptu i nie losuje ponownie zmiennych presetu.
+`regenerate` wskazuje istniejącą wiadomość assistant i dodaje jej nowy wariant. Frontend najpierw kończy zapis wiadomości użytkownika i przekazuje gotowy prompt po obecnej normalizacji. Backend nie odbudowuje promptu i nie losuje ponownie zmiennych presetu. Jeśli zapis przed regeneracją zmieni historię przez merge, trzeba przejrzeć rozmowę i ponowić generację; nie wysyłamy promptu dla innej wersji wiadomości.
 
 Zapisany profil dostarcza adres, model i parametry samplera. Snapshot wywołania zostaje w bazie; klucz API jest używany tylko w pamięci i nie jest kopiowany do zadania. Ten etap zawsze odbiera wewnętrzny stream tekstowy; nie oferuje jeszcze obsługi narzędzi, obrazów ani multimodalnego wejścia. Przesłane wywołania narzędzi są odrzucane.
 
@@ -82,6 +82,10 @@ Postęp jest zapisywany najwyżej co 500 ms przy napływie fragmentów; zakończ
 
 Zmieniona/usunięta wiadomość docelowa lub nowa wiadomość dodana podczas zwykłej generacji powoduje stan conflict. Wygenerowany tekst pozostaje w zadaniu, bez nadpisania ręcznych zmian lub odtworzenia usuniętej treści. Inne zmiany rozmowy są zachowane przy transakcyjnym zapisie wyniku.
 
-Do etapu podłączenia UI pozostają: odczyt po reconnect, prezentacja konfliktu/zatrzymania, koordynacja zapisów całej rozmowy, retencja starych zadań i test długiej generacji na rzeczywistym backendzie. Samo wdrożenie tego etapu nie przełącza istniejących rozmów na serwer.
+Obserwator odczytuje stan aktywnego zadania co 1,5 s, bez aktywnego zadania co 10 s, dodatkowo po powrocie do widocznej karty/online. Wyłączenie streamingu w profilu ukrywa podgląd tokenów; serwer nadal odbiera stream i zapisuje wynik. Utrata odpowiedzi na POST nie powoduje automatycznego ponowienia ani przejścia na generację w przeglądarce. Wynik trafia do rozmowy tylko przez serwer, a frontend scala odczytaną wersję. Wynik ostatniego nieudanego zadania można rozwinąć nad polem wpisywania; nie jest dopisywany jako nowa wiadomość do promptu.
+
+Pozostają: retencja starych zadań, kolejka wszystkich zapisów rozmowy, migracja narzędzi/podsumowań i test długiej generacji na rzeczywistym backendzie. Test wdrożenia: wyłączyć oba narzędzia i automatyczne podsumowania, wysłać tekst, poczekać na komunikat o wykonaniu na serwerze, wygasić ekran lub odświeżyć stronę, sprawdzić pojedynczą odpowiedź i reasoning (jeśli model je zwraca), następnie regenerację wariantu i Stop. Osobno sprawdzić dotychczasowe gen/regen obrazu.
+
+Testy obserwatora w `frontend/tests/generation-observer.test.cjs` uruchamiają rzeczywisty hook z kontrolowanym hostem efektów i siecią: reconnect, utrata POST, Stop, wyścigi odczytów i zmiana rozmowy. Nie zastępują testu Reacta w przeglądarce ani wdrożenia mobilnego.
 
 Lokalny test bez Dockera/Bun: `node --test sync/tests/generation.node.cjs` z katalogu projektu (Node 24, zależności frontendowe z TypeScript). Uruchamia właściwy kod store/runner na SQLite przez cienki adapter Node; nie zastępuje testu routingu Hono i runtime Bun.

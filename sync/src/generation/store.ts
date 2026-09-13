@@ -135,6 +135,8 @@ export class GenerationStore {
 
 /** Do not expose prompts, profile configuration or credentials through status polling. */
 export function publicJob(row: JobRow) {
+  const request = JSON.parse(row.request_json) as StartJob
   return { id: row.id, conversationId: row.conversation_id, status: row.status, resultMessageId: row.result_message_id,
+    mode: request.mode, targetMessageId: request.targetMessageId,
     content: row.content, thinking: row.thinking, error: row.error, revision: row.revision, createdAt: row.created_at, updatedAt: row.updated_at }
 }
