@@ -53,7 +53,7 @@ function collectReferencedBlobs(): Map<string, Set<string>> {
   // A conflict/cancellation can retain an image in the job without publishing
   // it into the conversation. Keep that recoverable result for a live chat.
   if (db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='generation_jobs'").get()) {
-    const jobs = db.query(`SELECT j.user_id, NULL AS blob_id, j.workflow_json AS data_json
+    const jobs = db.query(`SELECT j.user_id, NULL AS blob_id, (j.workflow_json || j.request_json) AS data_json
       FROM generation_jobs j JOIN entities e ON e.user_id=j.user_id AND e.id=j.conversation_id
       AND e.type='conversation' AND e.deleted_at IS NULL WHERE j.status != 'succeeded'`).all() as typeof rows
     rows.push(...jobs)

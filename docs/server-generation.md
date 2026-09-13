@@ -4,7 +4,7 @@
 
 Telefon wysyła polecenie rozpoczęcia generowania, a serwer prowadzi je i zapisuje wynik niezależnie od połączenia przeglądarki. Po wybudzeniu frontend odczytuje bieżący stan. Nie potrzebujemy aplikacji natywnej do osiągnięcia tego celu.
 
-Stan na 2026-09-13: **tekst, wyszukiwanie i obrazy są podłączone do serwera**. Użytkownik potwierdził tekst i regenerację po zamknięciu przeglądarki, po wdrożeniu wyszukiwania nie zgłosił błędu. Obrazy wymagają testu wdrożenia. Chat korzysta z serwera przy wyłączonych automatycznych podsumowaniach, bez multimodalnego wejścia. Ręczne generowanie i regeneracja obrazu działają na serwerze niezależnie od podsumowań. Regeneracja tekstu od starszej wiadomości użytkownika zachowuje ścieżkę przeglądarkową. Niczego nie wyłączamy automatycznie; interfejs pokazuje miejsce wykonania.
+Stan na 2026-09-13: **tekst, wyszukiwanie, obrazy, vision, podsumowania i generowanie od starszych wiadomości są podłączone do serwera**. Użytkownik potwierdził wcześniejsze etapy, w tym obrazy. Najnowsze trzy ścieżki wymagają testu wdrożenia. Nie trzeba wyłączać automatycznych podsumowań. Frontend nadal przygotowuje wejście; dopiero przyjęte zadanie działa niezależnie od przeglądarki. MockAdapter pozostaje lokalnym trybem demonstracyjnym. Stare funkcje przeglądarkowe pozostawiono do osobnego sprzątania po testach wdrożenia.
 
 ## Ustalenia z przeglądu kodu
 
@@ -22,12 +22,12 @@ Stan na 2026-09-13: **tekst, wyszukiwanie i obrazy są podłączone do serwera**
 2. **Trwałe zadanie tekstowe — zaimplementowane, do weryfikacji na Bun/Docker.** Addytywna tabela SQLite, rozpoczęcie/odczyt/anulowanie zadania, identyfikator ponowienia oraz transakcyjny zapis wyniku do właściwej rozmowy. Testy SQLite i wykonawcy uruchomiono lokalnie w Node 24 z kontrolowanym strumieniem, bez modeli i usług zewnętrznych.
 3. **Podłączenie frontendu — tekst potwierdzony na wdrożeniu.** Start zadania, postęp, odczyt po powrocie do rozmowy, osobny Stop i prezentacja zachowanego wyniku przy błędzie/konflikcie/przerwaniu. Logika obserwacji jest w `useGenerationJob`, poza App.tsx.
 4. **Narzędzia i obrazy — zaimplementowane, obrazy czekają na test wdrożenia.** Refiner, mostek, zapis bloba oraz regeneracja dokładnie na zapisanym prompcie działają w zadaniu. Zachowano pierwszy warunek dostępności narzędzia, osobny profil refinera i kolejność wywołań.
-5. **Domknięcie migracji.** Dwa urządzenia, edycje/usunięcia podczas generowania, przerwanie procesu i rekoncyliacja stanu. Dopiero po tych testach usuwać zastąpione ścieżki wykonania. Podsumowania wymagają osobnego uwzględnienia; nie przenosić przy okazji błędu granicy podsumowania.
+5. **Pozostałe ścieżki — zaimplementowane.** Podsumowania, vision i starszy wpis użytkownika. Domknięcie: test wdrożenia na dwóch urządzeniach, porządki w starych funkcjach, retencja zadań i kolejka zapisów rozmowy.
 
 ## Zasady projektowe dla kolejnego etapu
 
 - Zadanie ma właściciela, ID rozmowy, operację (nowa odpowiedź / wariant), ID docelowej wiadomości oraz własny identyfikator. Nigdy nie korzysta z aktualnie otwartego widoku jako identyfikatora miejsca zapisu.
-- Przyjęcie zadania i klucz ponowienia są zapisane przed odpowiedzią HTTP. Ponowienie po utracie odpowiedzi nie uruchamia drugiej generacji. Jeden aktywny przebieg na rozmowę; inne rozmowy nie muszą być blokowane.
+- Przyjęcie zadania i klucz ponowienia są zapisane przed odpowiedzią HTTP. Ponowienie po utracie odpowiedzi nie uruchamia drugiej generacji. Jedna aktywna odpowiedź/obraz oraz osobno jedno aktywne podsumowanie na rozmowę; inne rozmowy nie są blokowane.
 - Snapshot wejścia utrwala gotowy prompt i konfigurację wywołania. Reconnect nie buduje ponownie promptu, nie losuje ponownie zmiennych presetu i nie zmienia kolejności instrukcji. Klucze API i pełna treść promptu nie trafiają do powiadomień o postępie.
 - Serwer ma własny kontroler anulowania. Rozłączenie HTTP/WebSocket nie oznacza anulowania zadania. Przycisk Stop wysyła osobne polecenie.
 - Stan zadania i częściowa odpowiedź są odczytywalne po reconnect. Postęp ma rosnącą rewizję; zapis fragmentów jest grupowany, a nie wykonywany dla każdego tokena. Wynik końcowy musi być trwały przed oznaczeniem zadania jako zakończonego.
@@ -74,7 +74,7 @@ Przykład body rozpoczęcia (identyfikatory i wersja muszą odpowiadać zapisane
 
 `regenerate` wskazuje istniejącą wiadomość assistant i dodaje jej nowy wariant. Frontend najpierw kończy zapis wiadomości użytkownika i przekazuje gotowy prompt po obecnej normalizacji. Backend nie odbudowuje promptu i nie losuje ponownie zmiennych presetu. Jeśli zapis przed regeneracją zmieni historię przez merge, trzeba przejrzeć rozmowę i ponowić generację; nie wysyłamy promptu dla innej wersji wiadomości.
 
-Zapisany profil dostarcza adres, model i parametry samplera. Snapshot wywołania zostaje w bazie; klucze API modelu, refinera i SearXNG są używane tylko w pamięci. Opcjonalne `webSearch: true` i `image` włączają odpowiednie narzędzia zgodnie z zapisanymi ustawieniami. Deklaracje pochodzą z serwera. Multimodalne wejście do modelu czatu nadal nie jest obsługiwane przez zadania.
+Zapisany profil dostarcza adres, model i parametry samplera. Snapshot wywołania zostaje w bazie; klucze API modelu, refinera i SearXNG są używane tylko w pamięci. Opcjonalne `webSearch: true` i `image` włączają odpowiednie narzędzia zgodnie z zapisanymi ustawieniami. Deklaracje pochodzą z serwera. Multimodalne wejście jest obsługiwane przez referencje do własnych blobów lub obrazowe data URL.
 
 Timeout jest taki jak dotychczas dla długich POST: `PROXY_TIMEOUT_POST_MS`, domyślnie **600 000 ms (10 minut)**. Nie dodano limitu 60 sekund. Wykonawca stosuje istniejącą politykę adresów i przekierowań przez prywatne wywołanie handlera proxy, bez dodatkowego połączenia HTTP. Rozłączenie telefonu nie anuluje tego wykonania.
 
@@ -84,7 +84,17 @@ Zmieniona/usunięta wiadomość docelowa lub nowa wiadomość dodana podczas zwy
 
 Obserwator odczytuje stan aktywnego zadania co 1,5 s, bez aktywnego zadania co 10 s, dodatkowo po powrocie do widocznej karty/online. Wyłączenie streamingu w profilu ukrywa podgląd tokenów; serwer nadal odbiera stream i zapisuje wynik. Utrata odpowiedzi na POST nie powoduje automatycznego ponowienia ani przejścia na generację w przeglądarce. Wynik trafia do rozmowy tylko przez serwer, a frontend scala odczytaną wersję. Wynik ostatniego nieudanego zadania można rozwinąć nad polem wpisywania; nie jest dopisywany jako nowa wiadomość do promptu.
 
-Pozostają: retencja starych zadań, kolejka wszystkich zapisów rozmowy, migracja podsumowań/vision i test obrazów na rzeczywistym backendzie. Test wdrożenia: wyłączyć automatyczne podsumowania, włączyć obrazy i wyszukiwanie. Sprawdzić obraz wywołany przez model, ręczny przycisk obrazu, regenerację starego obrazu (bez refinera), zamknięcie przeglądarki w trakcie generowania oraz Stop. Sprawdzić też dotychczasowy tekst i wyszukiwanie.
+Pozostają: retencja starych zadań, kolejka wszystkich zapisów rozmowy, sprzątanie starych funkcji i test najnowszego etapu na rzeczywistym backendzie. Test wdrożenia: włączyć automatyczne podsumowania (na próbę niski próg), zamknąć przeglądarkę podczas odpowiedzi i sprawdzić pamięć po powrocie. Sprawdzić ręczne podsumowanie, dalsze pisanie w jego trakcie oraz Stop. Włączyć vision i wysłać obraz do modelu obsługującego obrazy, zamknąć przeglądarkę po przyjęciu zadania. Wygenerować odpowiedź od starszego wpisu user: nowa odpowiedź powinna pojawić się na końcu, z zachowaniem późniejszych wiadomości. Sprawdzić też zwykły tekst, wyszukiwanie i obrazy.
+
+## Podsumowania, vision i starsza wiadomość
+
+Podsumowanie jest zadaniem `operation: "summary"`. Ręczne uruchomienie najpierw zapisuje rozmowę, a serwer wybiera wiadomości, ostatnią pamięć, kartę, personę i zapisany profil. Automatyczne uruchomienie odbywa się w serwisie po opublikowaniu odpowiedzi (bez callbacku przeglądarki), według dotychczasowego progu. Nie uruchamia się po ręcznym obrazie ani po innym podsumowaniu. Jeżeli podsumowanie już trwa, kolejne nie jest uruchamiane. Prompt, wybór ostatnich N wiadomości, nazwy i nadpisanie modelu podsumowania są zachowane. Odczyt używa streamu serwerowego, z zachowaniem fallbacku reasoning przy pustej treści.
+
+Osobny indeks unikalności dopuszcza jedno aktywne podsumowanie obok jednego aktywnego zadania odpowiedzi/obrazu. Podsumowanie nie blokuje wpisywania. Jego wynik trafia wyłącznie do `longTermMemory`, nigdy jako wiadomość assistant. Przed zapisem porównywane są identyfikatory, role i wybrane treści uchwyconego prefiksu rozmowy, dotychczasowa pamięć i indeks. Późniejsze dopisane wiadomości są zachowywane, a granica podsumowania pozostaje na końcu faktycznie uchwyconej historii. Konflikt zachowuje wynik w zadaniu. Lista zadań zawsze zwraca najpierw aktywne, nawet przy wielu późniejszych zakończonych zadaniach.
+
+Vision zachowuje kolejność części tekst/obraz. Frontend wysyła `image_url.url: "rp-blob:<sha256>"`; serwer odczytuje blob wyłącznie danego użytkownika i dopiero przed wywołaniem modelu konwertuje go na data URL. Snapshot nie duplikuje bajtów obrazu. Starsze załączniki inline są uprzednio wgrywane do magazynu blobów, bez modyfikacji zapisanej historii. API nadal akceptuje poprawny obrazowy data URL w limicie rozmiaru żądania; nie pobiera dowolnych zewnętrznych URL. Model czatu pozostaje modelem aktywnego profilu, tak jak w dotychczasowym wywołaniu App.tsx; nie dodano automatycznego przełączania modeli po nazwie. Aktywne/nieudane zadania chronią referencje załączników przed GC.
+
+Starszy wpis user używa `historyTailId`, wskazującego ostatnią wiadomość całej rozmowy przy starcie. Prompt zawiera historię tylko do wybranego wpisu, według dotychczasowych reguł. Wynik jest dopisywany na końcu całej rozmowy; nic nie jest obcinane. Zmiana/usunięcie wiadomości docelowej lub zmiana końca rozmowy w trakcie generacji powoduje konflikt zamiast publikacji w niewłaściwym miejscu.
 
 ## Obrazy i bridgev2
 

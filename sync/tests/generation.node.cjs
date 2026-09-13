@@ -13,7 +13,7 @@ after(() => {
 writeFileSync(path.join(output, 'package.json'), '{"type":"commonjs"}')
 execFileSync(process.execPath, [
   require.resolve('../../frontend/node_modules/typescript/bin/tsc'),
-  'sync/src/generation/store.ts', 'sync/src/generation/runner.ts', 'sync/src/generation/searchWorkflow.ts', 'sync/src/generation/imageWorkflow.ts',
+  'sync/src/generation/store.ts', 'sync/src/generation/runner.ts', 'sync/src/generation/searchWorkflow.ts', 'sync/src/generation/imageWorkflow.ts', 'sync/src/generation/summaryPlan.ts',
   '--module', 'commonjs', '--target', 'ES2022', '--lib', 'ES2022,DOM', '--strict', '--skipLibCheck', '--rootDir', '.', '--outDir', output,
 ], { cwd: path.join(__dirname, '../..'), stdio: 'pipe' })
 const { GenerationStore } = require(path.join(output, 'sync/src/generation/store.js'))
@@ -23,6 +23,8 @@ const { searchWorkflow } = require(path.join(output, 'sync/src/generation/search
 const { parseSearchResults, searchFollowUp } = require(path.join(output, 'shared/llm/webSearch.js'))
 const { runImage } = require(path.join(output, 'sync/src/generation/imageWorkflow.js'))
 const { createImageGenerator } = require(path.join(output, 'shared/llm/imageGen.js'))
+const { prepareSummary } = require(path.join(output, 'sync/src/generation/summaryPlan.js'))
+const { resolveModelImages, validModelMessage } = require(path.join(output, 'shared/llm/messages.js'))
 
 function setup(t) {
   const sql = new DatabaseSync(':memory:')
@@ -389,4 +391,137 @@ test('GC protects a conflict image for its owner, but not another user or a dele
   sql.prepare("UPDATE entities SET deleted_at=? WHERE user_id='a'").run(Date.now())
   await module.exports.runGarbageCollection()
   assert.ok(deleted.some(([user]) => user === 'a'))
+})
+
+test('historical user generation appends at the current end without removing intervening turns', t => {
+  const { store, request, readChat, writeChat } = setup(t)
+  const chat = readChat()
+  chat.messages.push({ id: 'later-answer', role: 'assistant', variants: [{ content: 'keep this' }], selectedVariant: 0 })
+  writeChat(chat)
+  const input = { ...request, expectedUpdatedAt: 21, historyTailId: 'later-answer' }
+  store.start('a', input); store.update('a', input.id, 'running', '', '')
+  assert.equal(store.complete('a', input.id, 'new answer from old user', ''), true)
+  assert.deepEqual(readChat().messages.map(m => m.variants[0].content), ['hello', 'keep this', 'new answer from old user'])
+  const current = readChat()
+  const second = { ...input, id: 'second', expectedUpdatedAt: current.messages[2]._updatedAt, historyTailId: current.messages[2].id }
+  store.start('a', second); store.update('a', second.id, 'running', '', '')
+  current.messages.push({ id: 'another-user', role: 'user', variants: [{ content: 'intervening edit' }] }); writeChat(current)
+  assert.equal(store.complete('a', second.id, 'conflicting answer', ''), false)
+  assert.equal(readChat().messages.length, 4)
+})
+
+test('summary writes memory once and only advances to its actual captured boundary', t => {
+  const { store, request, readChat, writeChat } = setup(t)
+  const chat = readChat(); chat.lastSummarizedIndex = -1
+  chat.messages.push({ id: 'answer', role: 'assistant', variants: [{ content: 'answer' }], selectedVariant: 0 })
+  writeChat(chat)
+  const input = { ...request, operation: 'summary', targetMessageId: 'answer', expectedUpdatedAt: 21 }
+  store.start('a', input); store.update('a', input.id, 'running', '', '')
+  const changed = readChat(); changed.messages.push({ id: 'new-user', role: 'user', variants: [{ content: 'new' }], selectedVariant: 0 }); writeChat(changed)
+  assert.equal(store.complete('a', input.id, ' memory ', ''), true)
+  assert.equal(store.complete('a', input.id, 'duplicate', ''), false)
+  assert.equal(readChat().messages.length, 3)
+  assert.equal(readChat().longTermMemory.length, 1)
+  assert.equal(readChat().longTermMemory[0].content, 'memory')
+  assert.equal(readChat().longTermMemory[0].messageIndex, 1)
+  assert.equal(readChat().lastSummarizedIndex, 1)
+})
+
+test('summary conflicts preserve manual memory changes and edits to summarized messages', t => {
+  for (const change of ['memory', 'message']) {
+    const { store, request, readChat, writeChat } = setup(t)
+    const input = { ...request, operation: 'summary' }
+    store.start('a', input); store.update('a', input.id, 'running', '', '')
+    const chat = readChat()
+    if (change === 'memory') chat.longTermMemory.push({ id: 'manual', content: 'manual memory' })
+    else chat.messages[0].variants[0].content = 'manual edit'
+    writeChat(chat)
+    assert.equal(store.complete('a', input.id, 'generated memory', ''), false)
+    assert.equal(store.get('a', input.id).content, 'generated memory')
+    assert.deepEqual(readChat(), chat)
+  }
+})
+
+test('summary planning preserves threshold, message count, names, selected variants and existing memory', () => {
+  const conversation = { lastSummarizedIndex: -1, messages: [
+    { id: '1', role: 'user', variants: [{ content: 'first' }], selectedVariant: 0 },
+    { id: '2', role: 'assistant', variants: [{ content: 'unused' }, { content: 'selected' }], selectedVariant: 1 },
+  ], longTermMemory: [{ content: ' old memory ' }] }
+  const settings = { summarizerEnabled: true, summarizerThreshold: 2, summarizerMessageCount: 1, summarizerPrompt: 'system unchanged' }
+  const plan = prepareSummary(conversation, settings, { name: 'Character' }, { name: 'Persona' }, true)
+  assert.equal(plan[0].content, 'system unchanged')
+  assert.equal(plan[1].content, 'Aktualne podsumowanie:\nold memory\n\nOto nowe wiadomości:\n\nCharacter: selected\n\nZaktualizuj podsumowanie, uwzględniając nowe wydarzenia.')
+  assert.equal(prepareSummary(conversation, { ...settings, summarizerEnabled: false }, { name: 'C' }, undefined, true), null)
+  assert.equal(prepareSummary(conversation, { ...settings, summarizerThreshold: 3 }, { name: 'C' }, undefined, true), null)
+  assert.ok(prepareSummary(conversation, { ...settings, summarizerEnabled: false }, { name: 'C' }, undefined, false))
+})
+
+test('vision resolves owned blobs without changing prompt ordering or original snapshot', async () => {
+  const id = 'b'.repeat(64), calls = []
+  const messages = [{ role: 'system', content: 'system\nlore' }, { role: 'user', content: [
+    { type: 'text', text: 'before' }, { type: 'image_url', image_url: { url: `rp-blob:${id}` } },
+    { type: 'text', text: 'after' }, { type: 'image_url', image_url: { url: `rp-blob:${id}` } },
+  ] }]
+  assert.ok(messages.every(validModelMessage))
+  const output = await resolveModelImages(messages, async value => { calls.push(value); return 'data:image/png;base64,aW1n' })
+  assert.deepEqual(calls, [id])
+  assert.equal(output[0].content, messages[0].content)
+  assert.equal(output[1].content[0].text, 'before')
+  assert.equal(output[1].content[2].text, 'after')
+  assert.equal(output[1].content[1].image_url.url, 'data:image/png;base64,aW1n')
+  assert.equal(messages[1].content[1].image_url.url, `rp-blob:${id}`)
+  await assert.rejects(resolveModelImages(messages, async () => { throw Error('not owned') }), /not owned/)
+  assert.equal(validModelMessage({ role: 'user', content: [{ type: 'image_url', image_url: { url: 'http://arbitrary-server/image.png' } }] }), false)
+  assert.equal(validModelMessage({ role: 'user', content: [{ type: 'image_url', image_url: { url: 'rp-blob:../other-user' } }] }), false)
+})
+
+test('summary has its own concurrency slot and does not block chat generation', t => {
+  const { store, request } = setup(t)
+  store.start('a', { ...request, id: 'summary', operation: 'summary' })
+  assert.equal(store.start('a', request).created, true)
+  assert.throws(() => store.start('a', { ...request, id: 'summary-duplicate', operation: 'summary' }), /aktywne/)
+  assert.throws(() => store.start('a', { ...request, id: 'chat-duplicate' }), /aktywne/)
+})
+
+test('service launches automatic summary after publication without any browser callback', async t => {
+  const { sql, port, request, readChat, writeChat } = setup(t)
+  const chat = readChat(); chat.characterId = 'card'; chat.lastSummarizedIndex = -1; writeChat(chat)
+  const put = (type, id, data) => sql.prepare('INSERT INTO entities VALUES(?,?,?,?,?,NULL)').run('a', type, id, JSON.stringify(data), 1)
+  put('character', 'card', { id: 'card', name: 'Character' })
+  put('settings', 'singleton', { summarizerEnabled: true, summarizerThreshold: 1, summarizerModel: 'summary-model', summarizerPrompt: 'summary system', aiProfiles: [{ id: 'model', model: 'chat-model', baseUrl: 'http://model.test', sampler: { temperature: 0.7 } }] })
+  const ts = require('../../frontend/node_modules/typescript')
+  const code = ts.transpileModule(require('node:fs').readFileSync(path.join(__dirname, '../src/generation/service.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
+  const module = { exports: {} }, payloads = [], events = []
+  class PrivateRouter {
+    use() {} post() {}
+    request(_url, init) { payloads.push(JSON.parse(init.body)); return Promise.resolve(sse('updated memory')) }
+  }
+  require('node:vm').runInNewContext(code, {
+    exports: module.exports, module, console, crypto: globalThis.crypto, Headers, AbortController, AbortSignal,
+    require: name => {
+      if (name === 'hono') return { Hono: PrivateRouter }
+      if (name === '../db') return { db: port }
+      if (name === '../ws') return { broadcast: (...args) => events.push(args) }
+      if (name === '../proxy') return { makeProxyHandler: () => {} }
+      if (name === '../blobs') return {}
+      if (name === '../config') return { PROXY_TIMEOUT_POST_MS: 600000 }
+      if (name.startsWith('.')) return require(path.resolve(output, 'sync/src/generation', name) + '.js')
+      return require(name)
+    },
+  })
+  const service = module.exports
+  const job = service.generationStore.start('a', { ...request, expectedUpdatedAt: 21 }).job
+  service.generationRunner.start(job, async () => sse('chat answer'))
+  await new Promise(resolve => setImmediate(resolve))
+  const saved = JSON.parse(sql.prepare("SELECT data_json FROM entities WHERE user_id='a' AND type='conversation'").get().data_json)
+  assert.equal(saved.messages.length, 2)
+  assert.equal(saved.longTermMemory[0].content, 'updated memory')
+  assert.equal(saved.lastSummarizedIndex, 1)
+  assert.equal(payloads.length, 1)
+  assert.equal(payloads[0].model, 'summary-model')
+  assert.equal(payloads[0].temperature, 0.7)
+  assert.equal(payloads[0].tools, undefined)
+  assert.match(payloads[0].messages[1].content, /Character: chat answer/)
+  assert.equal(events.length, 2)
+  assert.equal(service.generationStore.list('a', 'chat').filter(j => j.status === 'succeeded').length, 2)
 })

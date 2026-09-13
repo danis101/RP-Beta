@@ -11,6 +11,7 @@ export function useGenerationJob(conversationId: string | null, userId: string |
   const [operationNotice, setOperationNotice] = useState('')
   const [checking, setChecking] = useState(true)
   const [starting, setStarting] = useState(false)
+  const [summaryActive, setSummaryActive] = useState(false)
   const callback = useRef(onConversation)
   callback.current = onConversation
   const scope = `${userId ?? ''}:${conversationId ?? ''}`
@@ -26,6 +27,7 @@ export function useGenerationJob(conversationId: string | null, userId: string |
     setNotice('')
     setOperationNotice('')
     setChecking(true)
+    setSummaryActive(false)
     if (!conversationId || !userId) { setChecking(false); return }
     let disposed = false
     let pending = false
@@ -41,18 +43,20 @@ export function useGenerationJob(conversationId: string | null, userId: string |
       try {
         const { items } = await generationApi.list(conversationId, controller.signal)
         if (disposed || version !== mutations.current) return
-        const latest = items.find(isGenerationActive) ?? items[0] ?? null
+        const latest = items.find(item => isGenerationActive(item) && item.operation !== 'summary') ?? items.find(isGenerationActive) ?? items[0] ?? null
+        setSummaryActive(items.some(item => isGenerationActive(item) && item.operation === 'summary'))
         if (latest && admission.current && latest.id === admission.current.id && admission.current.stop && isGenerationActive(latest)) {
           await generationApi.cancel(latest.id)
           // Fetch the resulting state on the next poll, including its durable output.
           return
         }
         // Fetch the durable conversation before removing the streaming preview.
-        if (latest && !isGenerationActive(latest) && applied !== `${latest.id}:${latest.revision}`) {
+        const readKey = latest?.operation === 'summary' && isGenerationActive(latest) ? `${latest.id}:summary` : `${latest?.id}:${latest?.revision}`
+        if (latest && (!isGenerationActive(latest) || latest.operation === 'summary') && applied !== readKey) {
           const conversation = await conversationsApi.get(conversationId)
           if (disposed || version !== mutations.current) return
           callback.current(conversation, latest.status === 'succeeded')
-          applied = `${latest.id}:${latest.revision}`
+          applied = readKey
         }
         setJob(latest)
         pollDelay = isGenerationActive(latest) ? 1500 : 10000
@@ -122,5 +126,6 @@ export function useGenerationJob(conversationId: string | null, userId: string |
   }
   // Avoid displaying the previous conversation's state during an effect transition.
   const visibleJob = job?.conversationId === conversationId ? job : null
-  return { job: visibleJob, notice: notice || operationNotice, busy: checking || starting || isGenerationActive(visibleJob), start, cancel }
+  return { job: visibleJob, summaryActive, notice: notice || operationNotice,
+    busy: checking || starting || (isGenerationActive(visibleJob) && visibleJob?.operation !== 'summary'), start, cancel }
 }

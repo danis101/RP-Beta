@@ -2,7 +2,8 @@ import { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { authMiddleware, type AppEnv } from '../auth'
 import { db } from '../db'
-import { generationRunner, generationStore, openModelResponse, createSearchWorkflow, createImageExecution, type SearchSettings } from '../generation/service'
+import { generationRunner, generationStore, openModelResponse, createSearchWorkflow, createImageExecution, startSummary, type SearchSettings } from '../generation/service'
+import { validModelMessage } from '../../../shared/llm/messages'
 import { webSearchDeclaration } from '../../../shared/llm/webSearch'
 import { imageDeclaration, type ImageInput } from '../../../shared/llm/imageTypes'
 import { JobError, publicJob, type StartJob } from '../generation/store'
@@ -29,11 +30,11 @@ generationRoutes.post('/', async c => {
   if (!body || !validId(body.id) || !validId(body.conversationId) || !validId(body.targetMessageId) || !validId(body.profileId) ||
       !['append', 'regenerate'].includes(body.mode) || !Number.isSafeInteger(body.expectedUpdatedAt) ||
       (body.webSearch !== undefined && typeof body.webSearch !== 'boolean') ||
-      (body.operation !== undefined && body.operation !== 'image') ||
+      (body.operation !== undefined && !['image', 'summary'].includes(body.operation)) ||
+      (body.historyTailId !== undefined && !validId(body.historyTailId)) ||
       !Array.isArray(body.messages) || !body.messages.length || body.messages.length > 4096 ||
-      body.messages.some((message: any) => !message || !['system', 'user', 'assistant'].includes(message.role) ||
-        typeof message.content !== 'string' || message.tool_calls || message.tool_call_id) || body.tools?.length) {
-    return c.json({ error: 'Nieprawidlowe zadanie. Przyjmowany jest prompt tekstowy, opcjonalnie z webSearch; bez obrazow i wlasnych deklaracji narzedzi.' }, 400)
+      body.messages.some((message: any) => !validModelMessage(message)) || body.tools?.length) {
+    return c.json({ error: 'Nieprawidlowe zadanie. Dozwolony jest tekst i zalaczniki image_url jako rp-blob lub data URL; bez wlasnych deklaracji narzedzi.' }, 400)
   }
   let image: ImageInput | undefined
   if (body.image !== undefined) {
@@ -56,9 +57,14 @@ generationRoutes.post('/', async c => {
     ...(body.webSearch === true ? { webSearch: true as const } : {}),
     ...(image ? { image } : {}),
     ...(body.operation === 'image' ? { operation: 'image' as const } : {}),
+    ...(body.historyTailId ? { historyTailId: body.historyTailId } : {}),
   }
   const userId = c.get('userId')
   try {
+    if (body.operation === 'summary') {
+      if (body.mode !== 'append' || body.image || body.webSearch || body.historyTailId) throw new JobError('Nieprawidlowe parametry podsumowania.', 400)
+      return c.json(startSummary(userId, body.conversationId, body.profileId, body.id, body.expectedUpdatedAt), 202)
+    }
     const previous = generationStore.get(userId, request.id)
     if (previous) {
       if (previous.request_json !== JSON.stringify(request)) throw new JobError('Ten identyfikator zadania zostal juz uzyty z innymi danymi.')

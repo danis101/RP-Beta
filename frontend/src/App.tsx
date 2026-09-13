@@ -23,6 +23,7 @@ import {
   connectSyncWs,
   isRecentSelfSave,
   SETTINGS_WS_ID,
+  uploadBlobFromBlob,
 } from './services/sync'
 import { ConflictError } from './services/sync/client'
 import { useGenerationJob } from './hooks/useGenerationJob'
@@ -39,7 +40,7 @@ import { useI18n } from './i18n'
 import { useSettings } from './context/SettingsContext'
 import { useAuth } from './context/AuthContext'
 import { useConflict } from './context/ConflictContext'
-import { generateSummary, shouldSummarize } from './lib/summarizer'
+import { shouldSummarize } from './lib/summarizer'
 import { buildToolDeclarations, getTool, type ToolContext, type ToolResult } from './lib/toolRegistry'
 import { buildImageRefinerMessages } from './lib/refiner'
 import { startApiStatusPolling, stopApiStatusPolling } from './lib/apiStatus'
@@ -415,7 +416,7 @@ export default function App() {
     abortRef.current?.abort()
   }
 
-  const buildMessages = async (history: ChatMessage[]): Promise<OpenAIMessage[]> => {
+  const buildMessages = async (history: ChatMessage[], server = false): Promise<OpenAIMessage[]> => {
     if (!activeCharacter) return []
 
     const tokenCtx = {
@@ -428,6 +429,7 @@ export default function App() {
     const slicedHistory = memory > 0 ? history.slice(-memory) : history
 
     const substituted: OpenAIMessage[] = []
+    const legacyImages = new Map<string, Promise<string>>()
     for (const m of slicedHistory) {
       const variant = m.variants[m.selectedVariant] ?? m.variants[0]
       const content = substituteTokens(getContent(m), tokenCtx)
@@ -437,7 +439,14 @@ export default function App() {
         const parts: any[] = []
         if (content) parts.push({ type: 'text', text: content })
         for (const att of attachments) {
-          const dataUrl = att.data ?? (att.blobId ? await getBlobAsDataUrl(att.blobId) : undefined)
+          let blobId = att.blobId
+          if (server && !blobId && att.data?.startsWith('data:image/')) {
+            if (!legacyImages.has(att.data)) {
+              legacyImages.set(att.data, fetch(att.data).then(response => response.blob()).then(blob => uploadBlobFromBlob(blob, 'vision.png')))
+            }
+            blobId = await legacyImages.get(att.data)
+          }
+          const dataUrl = server && blobId ? `rp-blob:${blobId}` : att.data ?? (blobId ? await getBlobAsDataUrl(blobId) : undefined)
           if (dataUrl) parts.push({ type: 'image_url', image_url: { url: dataUrl } })
         }
         substituted.push({ role: 'user', content: parts })
@@ -573,7 +582,14 @@ export default function App() {
     let thinking = ''
     let toolCalls: APIToolCall[] = []
 
-    const baseMessages = await buildMessages(history)
+    let baseMessages: OpenAIMessage[]
+    try {
+      baseMessages = await buildMessages(history, !!activeProfile?.baseUrl.trim() && !extraMessages && mode !== 'replace')
+    } catch (error) {
+      setIsTyping(false); setReplacingMessageId(null); abortRef.current = null
+      pushBanner({ title: 'Nie przygotowano żądania', description: error instanceof Error ? error.message : String(error) })
+      return
+    }
     if (controller.signal.aborted) {
       setIsTyping(false)
       setReplacingMessageId(null)
@@ -588,13 +604,9 @@ export default function App() {
     const useStreaming = activeProfile?.streamingEnabled ?? true
     const tools = buildToolDeclarations(settings)
     const conversation = savedConversation ?? activeConversation
-    // Keep vision and automatic-summary workflows on their existing path
-    // until their complete chain has a server owner as well.
     const serverEligible = conversation && activeProfile?.baseUrl.trim() &&
-      !settings.summarizerEnabled && !extraMessages && !toolResults && mode !== 'replace' &&
-      (mode === 'regenerate' || conversation.messages[conversation.messages.length - 1]?.id === targetMessageId) &&
-      messages.every(message => typeof message.content === 'string' &&
-        ['system', 'user', 'assistant'].includes(message.role) && !message.tool_calls && !message.tool_call_id)
+      !extraMessages && !toolResults && mode !== 'replace' &&
+      messages.every(message => ['system', 'user', 'assistant'].includes(message.role) && !message.tool_calls && !message.tool_call_id)
     if (serverEligible) {
       try {
         const saved = savedConversation ?? await persistConversationInternal(conversation, false)
@@ -608,6 +620,7 @@ export default function App() {
         await serverGeneration.start({ id: crypto.randomUUID(), conversationId: saved.id,
           targetMessageId, mode: mode as 'append' | 'regenerate', expectedUpdatedAt: saved._serverUpdatedAt,
           profileId: activeProfile!.id, messages: messages as StartGeneration['messages'],
+          ...(mode === 'append' && saved.messages[saved.messages.length - 1]?.id !== targetMessageId ? { historyTailId: saved.messages[saved.messages.length - 1].id } : {}),
           ...(tools.some(tool => tool.function.name === 'web_search') ? { webSearch: true as const } : {}),
           ...(tools.some(tool => tool.function.name === 'generate_image') ? { image: imageInput(history) } : {}) })
       } catch (error) {
@@ -1289,66 +1302,23 @@ export default function App() {
   }
 
   const runSummarizer = async (conv: Conversation) => {
-    if (summarizing) return
-    if (!activeCharacter) return
-
+    if (summarizing || isTyping || toolRunning || serverGeneration.busy || serverGeneration.summaryActive) return
     setSummarizing(true)
-
+    const controller = new AbortController()
+    abortRef.current = controller
     try {
-      const startIndex = conv.lastSummarizedIndex + 1
-      const messagesToSummarize = conv.messages.slice(startIndex)
-      if (messagesToSummarize.length === 0) {
-        setSummarizing(false)
-        return
-      }
-
-      const count = settings.summarizerMessageCount ?? 30
-      const limited = messagesToSummarize.slice(-count)
-
-      const existingSummary =
-        conv.longTermMemory.length > 0
-          ? conv.longTermMemory[conv.longTermMemory.length - 1].content
-          : undefined
-
-      const summary = await generateSummary(
-        limited,
-        activeCharacter,
-        activePersona,
-        existingSummary,
-        settings.summarizerPrompt,
-        settings.summarizerModel || undefined,
-        adapter,
-        activeProfile!,
-      )
-
-      if (summary) {
-        const newEntry: LongTermMemoryEntry = {
-          id: crypto.randomUUID(),
-          content: summary,
-          timestamp: Date.now(),
-          messageIndex: conv.messages.length - 1,
-        }
-
-        setConversations((prev) =>
-          prev.map((c) => {
-            if (c.id !== conv.id) return c
-            const updated: Conversation = {
-              ...c,
-              longTermMemory: [...c.longTermMemory, newEntry],
-              lastSummarizedIndex: c.messages.length - 1,
-            }
-            persistConversation(updated)
-            return updated
-          }),
-        )
-      }
+      const saved = await persistConversationInternal(conv, false)
+      if (controller.signal.aborted) return
+      if (!saved || saved._serverUpdatedAt == null) throw new Error('Nie zapisano rozmowy przed podsumowaniem.')
+      const target = saved.messages[saved.messages.length - 1]
+      if (!target) return
+      await serverGeneration.start({ id: crypto.randomUUID(), conversationId: saved.id, targetMessageId: target.id,
+        operation: 'summary', mode: 'append', expectedUpdatedAt: saved._serverUpdatedAt,
+        profileId: activeProfile?.id ?? 'unconfigured', messages: [{ role: 'user', content: '' }] })
     } catch (error) {
-      console.error('Summarizer error:', error)
-    } finally {
-      setSummarizing(false)
-    }
+      pushBanner({ title: 'Nie uruchomiono podsumowania', description: error instanceof Error ? error.message : String(error) })
+    } finally { setSummarizing(false); if (abortRef.current === controller) abortRef.current = null }
   }
-
   const handleManualSummarize = () => {
     if (!activeConversation) return
     runSummarizer(activeConversation)
@@ -1455,10 +1425,11 @@ export default function App() {
               activeImageStyleId={activeConversation.imageStyleId}
               activeLorebookIds={activeConversation.lorebookIds ?? []}
               isTyping={isTyping || toolRunning || serverGeneration.busy}
-              streamingText={isGenerationActive(serverGeneration.job) ? (activeProfile?.streamingEnabled === false ? '' : serverGeneration.job!.content) : streamingText}
+              streamingText={isGenerationActive(serverGeneration.job) ? (activeProfile?.streamingEnabled === false || serverGeneration.job?.operation === 'summary' ? '' : serverGeneration.job!.content) : streamingText}
               replacingMessageId={isGenerationActive(serverGeneration.job) && serverGeneration.job?.mode === 'regenerate' ? serverGeneration.job.targetMessageId : replacingMessageId}
               generationNotice={serverGeneration.notice || (isGenerationActive(serverGeneration.job)
                 ? serverGeneration.job?.phase === 'web-search' ? 'Wyszukiwanie na serwerze — możesz wygasić ekran.'
+                  : serverGeneration.job?.operation === 'summary' ? 'Podsumowanie pamięci na serwerze — możesz wygasić ekran.'
                   : serverGeneration.job?.phase === 'refiner' ? 'Refiner przygotowuje prompt na serwerze — możesz wygasić ekran.'
                   : serverGeneration.job?.phase?.startsWith('image-') ? 'Generowanie i zapis obrazu na serwerze — możesz wygasić ekran.'
                   : serverGeneration.job?.phase === 'follow-up' ? 'Odpowiedź z wynikami wyszukiwania na serwerze — możesz wygasić ekran.'
@@ -1491,7 +1462,7 @@ export default function App() {
               onShowPrompt={() => setPromptViewerOpen(true)}
               onManualSummarize={handleManualSummarize}
               onOpenMemoryEditor={() => setMemoryEditorOpen(true)}
-              summarizing={summarizing}
+              summarizing={summarizing || serverGeneration.summaryActive}
               visionEnabled={activeProfile?.visionEnabled}
               imageGenEnabled={settings.imageGenEnabled}
               onGenerateImage={handleGenerateImage}

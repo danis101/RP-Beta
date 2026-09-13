@@ -568,6 +568,7 @@ export default function ChatView({
 
       <div className="shrink-0 px-3 pb-2 pt-1 md:px-5 md:pb-5">
         {generationNotice && <p role="status" className="mb-2 text-xs text-amber-300">{generationNotice}</p>}
+        {summarizing && !isTyping && <button type="button" onClick={onStop} className="mb-2 min-h-10 text-xs text-amber-300 underline">Zatrzymaj podsumowanie</button>}
         {generationResult && (
           <details key={generationResult.id} className="mb-2 rounded border border-amber-800 p-2 text-xs text-amber-200">
             <summary className="cursor-pointer">Zadanie: {({ failed: 'błąd', cancelled: 'zatrzymane', interrupted: 'przerwane', conflict: 'konflikt zapisu' } as Record<string, string>)[generationResult.status] ?? generationResult.status} — zapisany wynik</summary>

@@ -1,11 +1,13 @@
 import { request } from './client'
 import type { ImageInput, WorkflowToolCall } from '../../../../shared/llm/imageTypes'
+import type { ModelMessage } from '../../../../shared/llm/messages'
 
 export interface GenerationJob {
   id: string
   conversationId: string
   targetMessageId: string
   mode: 'append' | 'regenerate'
+  operation?: 'image' | 'summary'
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted' | 'conflict'
   resultMessageId: string
   content: string
@@ -27,8 +29,9 @@ export interface StartGeneration {
   profileId: string
   webSearch?: true
   image?: ImageInput
-  operation?: 'image'
-  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>
+  operation?: 'image' | 'summary'
+  historyTailId?: string
+  messages: ModelMessage[]
 }
 
 export const isGenerationActive = (job: GenerationJob | null) =>

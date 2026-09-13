@@ -8,7 +8,7 @@ export type GenerationWorkflow = (signal: AbortSignal, progress: (state: Workflo
 /** Owns execution; HTTP handlers only start/observe/cancel. No browser request signal. */
 export class GenerationRunner {
   private active = new Map<string, AbortController>()
-  constructor(private store: GenerationStore, private published: (userId: string, conversationId: string) => void) {}
+  constructor(private store: GenerationStore, private published: (userId: string, conversationId: string, job: JobRow) => void) {}
 
   start(job: JobRow, openResponse: (signal: AbortSignal) => Promise<Response>, workflow?: GenerationWorkflow): void {
     const key = JSON.stringify([job.user_id, job.id])
@@ -60,7 +60,7 @@ export class GenerationRunner {
         })
         content = result.content; thinking = result.thinking
         if (!content.trim() && !thinking.trim() && !result.toolCall) throw new Error('Model nie zwrocil odpowiedzi.')
-        if (this.store.complete(job.user_id, job.id, content, thinking, result.toolCall)) this.published(job.user_id, job.conversation_id)
+        if (this.store.complete(job.user_id, job.id, content, thinking, result.toolCall)) this.published(job.user_id, job.conversation_id, job)
         return
       }
       const response = await openResponse(controller.signal)
@@ -71,7 +71,7 @@ export class GenerationRunner {
         onError: error => { throw error }, onDone: () => {},
       })
       if (!content.trim() && !thinking.trim()) throw new Error('Model nie zwrocil odpowiedzi.')
-      if (this.store.complete(job.user_id, job.id, content, thinking)) this.published(job.user_id, job.conversation_id)
+      if (this.store.complete(job.user_id, job.id, content, thinking)) this.published(job.user_id, job.conversation_id, job)
     } catch (error) {
       this.store.update(job.user_id, job.id, 'failed', content, thinking, error instanceof Error ? error.message : String(error))
     } finally {

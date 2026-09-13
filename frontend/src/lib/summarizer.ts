@@ -1,42 +1,9 @@
 import type { ChatMessage, CharacterCard, Persona, ApiProfile } from '../types'
 import type { ApiAdapter } from '../services/api'
-import { getContent } from './messages'
 
-/**
- * Buduje prompt dla summarizera.
- * @param messages - wiadomości do podsumowania (zazwyczaj ostatnie N)
- * @param character - karta postaci
- * @param persona - persona użytkownika
- * @param existingSummary - dotychczasowe podsumowanie (jeśli istnieje)
- * @param customPrompt - edytowalny prompt systemowy z ustawień
- */
-export function buildSummaryPrompt(
-  messages: ChatMessage[],
-  character: CharacterCard,
-  persona: Persona | undefined,
-  existingSummary: string | undefined,
-  customPrompt: string,
-): { system: string; user: string } {
-  const charName = character.name
-  const userName = persona?.name ?? 'Użytkownik'
 
-  const historyText = messages
-    .map((m) => {
-      const role = m.role === 'assistant' ? charName : userName
-      const content = getContent(m)
-      return `${role}: ${content}`
-    })
-    .join('\n')
-
-  const existingText = existingSummary?.trim() ? `Aktualne podsumowanie:\n${existingSummary.trim()}\n\n` : ''
-
-  const userPrompt = `${existingText}Oto nowe wiadomości:\n\n${historyText}\n\nZaktualizuj podsumowanie, uwzględniając nowe wydarzenia.`
-
-  return {
-    system: customPrompt,
-    user: userPrompt,
-  }
-}
+import { buildSummaryPrompt } from '../../../shared/llm/summary'
+export { buildSummaryPrompt, shouldSummarize } from '../../../shared/llm/summary'
 
 /**
  * Generuje podsumowanie historii rozmowy za pomocą LLM.
@@ -91,18 +58,4 @@ export async function generateSummary(
     console.error('Błąd generowania podsumowania:', error)
     throw error
   }
-}
-
-/**
- * Sprawdza, czy należy wygenerować nowe podsumowanie.
- * @param lastSummarizedIndex - indeks ostatniej podsumowanej wiadomości
- * @param currentMessageCount - aktualna liczba wiadomości
- * @param threshold - próg nowych wiadomości od ostatniego podsumowania
- */
-export function shouldSummarize(
-  lastSummarizedIndex: number,
-  currentMessageCount: number,
-  threshold: number,
-): boolean {
-  return currentMessageCount - 1 - lastSummarizedIndex >= threshold
 }

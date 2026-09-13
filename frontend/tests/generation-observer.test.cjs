@@ -153,3 +153,14 @@ test('an old empty poll cannot erase a newly admitted job', async () => {
   assert.equal(h.render().busy, true)
   h.unmount()
 })
+
+test('active summary refreshes the published chat and leaves input available', async () => {
+  const h = host({ list: async () => ({ items: [{ ...active, operation: 'summary', phase: 'summary' }] }) })
+  h.render(); await settle()
+  assert.equal(h.render().busy, false)
+  assert.equal(h.render().summaryActive, true)
+  assert.equal(h.received.length, 1)
+  await h.poll()
+  assert.equal(h.received.length, 1)
+  h.unmount()
+})
