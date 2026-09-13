@@ -15,6 +15,7 @@ import { Hono } from 'hono'
 import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { db, BLOBS_DIR } from '../db'
+import { generationRunner } from '../generation/service'
 import {
   adminMiddleware,
   authMiddleware,
@@ -111,6 +112,7 @@ adminRoutes.delete('/users/:id', async (c) => {
   if (!user) return c.json({ error: 'Konto nie istnieje' }, 404)
 
   // Twarde kasowanie: encje + bloby + konto.
+  generationRunner.cancelUser(targetId)
   db.run('DELETE FROM entities WHERE user_id = ?', [targetId])
   db.run('DELETE FROM blobs WHERE user_id = ?', [targetId])
   db.run('DELETE FROM users WHERE id = ?', [targetId])
@@ -162,4 +164,3 @@ adminRoutes.patch('/users/:id/password', async (c) => {
 
   return c.json({ ok: true })
 })
-

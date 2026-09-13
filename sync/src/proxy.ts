@@ -106,7 +106,7 @@ function describeError(err: unknown, timeoutMs: number): string {
   return err instanceof Error ? err.message : String(err)
 }
 
-export function makeProxyHandler(prefix: string, targetHeader: string) {
+export function makeProxyHandler(prefix: string, targetHeader: string, executionSignal?: AbortSignal) {
   return async (c: Context<AppEnv>): Promise<Response> => {
     const rawTarget = (c.req.header(targetHeader) ?? '').trim()
     const targetBase = rawTarget.replace(/\/+$/, '')
@@ -163,7 +163,7 @@ export function makeProxyHandler(prefix: string, targetHeader: string) {
       method: c.req.method,
       headers: forwardHeaders,
       redirect: 'manual',
-      signal: timeoutSignal,
+      signal: executionSignal ? AbortSignal.any([timeoutSignal, executionSignal]) : timeoutSignal,
     }
 
     if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
@@ -270,4 +270,3 @@ export function makeProxyHandler(prefix: string, targetHeader: string) {
     })
   }
 }
-

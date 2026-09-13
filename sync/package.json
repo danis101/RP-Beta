@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "bun test",
+    "test:generation:node": "node --test tests/generation.node.cjs",
     "dev": "bun --watch src/index.ts",
     "start": "bun src/index.ts"
   },

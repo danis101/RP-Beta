@@ -26,6 +26,8 @@ import { blobsRoutes } from './routes/blobs'
 import { createEntityRoutes } from './routes/entities'
 import { adminRoutes } from './routes/admin'
 import { settingsRoutes } from './routes/settings'
+import { generationRoutes } from './routes/generation'
+import { generationStore } from './generation/service'
 import { makeProxyHandler } from './proxy'
 import { verifySession, proxyAuthMiddleware, type AppEnv } from './auth'
 import { register, unregister, connectionStats } from './ws'
@@ -36,6 +38,8 @@ import { startGcLoop } from './gc'
 import './db'
 
 const app = new Hono<AppEnv>()
+// Run before accepting requests; restart never silently duplicates model/tool calls.
+generationStore.recover()
 
 app.use('*', logger())
 app.use(
@@ -78,6 +82,7 @@ app.all('/images-proxy/*', makeProxyHandler('/images-proxy', 'x-image-target'))
 app.route('/auth', authRoutes)
 app.route('/admin', adminRoutes)
 app.route('/settings', settingsRoutes)
+app.route('/generation-jobs', generationRoutes)
 app.route('/blobs', blobsRoutes)
 app.route('/characters', createEntityRoutes('character', 'portraitBlobId'))
 app.route('/personas', createEntityRoutes('persona', 'avatarBlobId'))
@@ -162,4 +167,3 @@ export default {
   websocket,
   idleTimeout: 255,
 }
-

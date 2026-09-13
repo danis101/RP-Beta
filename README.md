@@ -156,7 +156,7 @@ The application is usable and suitable for a trusted group on a LAN or VPN. Know
 
 Existing legacy image fields (`portrait`, `avatar`, `data`) are retained for compatibility with older data and will not be removed without a migration.
 
-The staged server-generation migration is tracked in [the implementation notes](docs/server-generation.md). The shared response reader is in `shared/llm`; generation still runs in the browser at this stage.
+The staged server-generation migration is tracked in [the implementation notes](docs/server-generation.md). The shared response reader is in `shared/llm`; a durable text-job API is implemented on the backend, but the current UI still runs generation in the browser.
 
 ## Network access
 
