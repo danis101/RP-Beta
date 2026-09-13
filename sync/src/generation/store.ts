@@ -1,3 +1,5 @@
+import type { SearchToolCall } from '../../../shared/llm/webSearch'
+
 /** SQLite port keeps lifecycle tests runnable without Bun or a production database. */
 export interface JobDatabase {
   exec(sql: string): unknown
@@ -13,6 +15,7 @@ export interface StartJob {
   mode: 'append' | 'regenerate'
   expectedUpdatedAt: number
   profileId: string
+  webSearch?: true
   messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>
 }
 
@@ -20,6 +23,7 @@ export interface JobRow {
   id: string; user_id: string; conversation_id: string; status: string
   request_json: string; input_json: string; target_json: string; result_message_id: string
   content: string; thinking: string; error: string | null
+  workflow_json: string
   created_at: number; updated_at: number; revision: number
 }
 
@@ -41,6 +45,10 @@ export class GenerationStore {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_generation_active ON generation_jobs(user_id,conversation_id)
       WHERE status IN ('queued','running');
     CREATE INDEX IF NOT EXISTS idx_generation_list ON generation_jobs(user_id,conversation_id,created_at DESC);`)
+    // Additive migration for databases deployed before tool workflows.
+    if (!db.query('PRAGMA table_info(generation_jobs)').all().some((column: any) => column.name === 'workflow_json')) {
+      db.exec("ALTER TABLE generation_jobs ADD COLUMN workflow_json TEXT NOT NULL DEFAULT '{}'")
+    }
   }
 
   get(userId: string, id: string): JobRow | null {
@@ -92,13 +100,19 @@ export class GenerationStore {
     return this.get(userId, id)
   }
 
+  workflow(userId: string, id: string, phase: string, toolCall?: SearchToolCall): void {
+    this.db.run(`UPDATE generation_jobs SET workflow_json=?,revision=revision+1,updated_at=MAX(updated_at+1,?)
+      WHERE user_id=? AND id=? AND status IN ('queued','running')`,
+      [JSON.stringify({ phase, toolCall }), Date.now(), userId, id])
+  }
+
   recover(): void {
     this.db.run(`UPDATE generation_jobs SET status='interrupted',error='Serwer zostal zrestartowany. Zadanie nie zostalo automatycznie ponowione.',
       revision=revision+1,updated_at=MAX(updated_at+1,?) WHERE status IN ('queued','running')`, [Date.now()])
   }
 
   /** Publish against current state, in the same transaction as successful job completion. */
-  complete(userId: string, id: string, content: string, thinking: string): boolean {
+  complete(userId: string, id: string, content: string, thinking: string, toolCall?: SearchToolCall): boolean {
     return this.db.transaction(() => {
       const job = this.get(userId, id)
       if (!job || job.status !== 'running') return false
@@ -113,7 +127,7 @@ export class GenerationStore {
         return false
       }
       const now = Math.max(Date.now(), row.updated_at + 1, (target._updatedAt ?? target.timestamp ?? 0) + 1)
-      const variant = { content, ...(thinking ? { thinking } : {}) }
+      const variant = { content, ...(thinking ? { thinking } : {}), ...(toolCall ? { toolCall } : {}) }
       if (request.mode === 'append') {
         if (conversation.messages.some((message: any) => message.id === job.result_message_id)) {
           throw new JobError('Wiadomosc wynikowa juz istnieje.')
@@ -138,5 +152,6 @@ export function publicJob(row: JobRow) {
   const request = JSON.parse(row.request_json) as StartJob
   return { id: row.id, conversationId: row.conversation_id, status: row.status, resultMessageId: row.result_message_id,
     mode: request.mode, targetMessageId: request.targetMessageId,
+    ...JSON.parse(row.workflow_json || '{}'),
     content: row.content, thinking: row.thinking, error: row.error, revision: row.revision, createdAt: row.created_at, updatedAt: row.updated_at }
 }

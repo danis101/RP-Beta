@@ -1,5 +1,6 @@
 import type { WebSearchResult } from '../types'
 import { getToken } from '../services/sync/client'
+import { parseSearchResults } from '../../../shared/llm/webSearch'
 
 let lastSearchTime = 0
 
@@ -66,33 +67,9 @@ export async function searchWeb(
       console.debug('SearXNG sample result:', data.results[0])
     }
 
-    const results: WebSearchResult[] = (data.results || [])
-      .slice(0, maxResults)
-      .map((r: any) => ({
-        title: r.title || r.url || 'Bez tytułu',
-        url: r.url || '#',
-        snippet: r.content || r.snippet || '',
-        source: r.engine || 'SearXNG',
-      }))
-
-    if (results.length === 0 && data.infoboxes && data.infoboxes.length > 0) {
-      for (const info of data.infoboxes) {
-        if (info.infobox) {
-          results.push({
-            title: info.infobox,
-            url: info.id || info.url || '#',
-            snippet: info.content || '',
-            source: 'Infobox',
-          })
-        }
-        if (results.length >= maxResults) break
-      }
-    }
-
-    return results
+    return parseSearchResults(data, maxResults)
   } catch (error) {
     console.error('Web search error:', error)
     throw error
   }
 }
-

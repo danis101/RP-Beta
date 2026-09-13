@@ -561,9 +561,9 @@ export default function App() {
     const useStreaming = activeProfile?.streamingEnabled ?? true
     const tools = buildToolDeclarations(settings)
     const conversation = savedConversation ?? activeConversation
-    // Keep tool, vision and automatic-summary workflows on their existing path
+    // Keep image, vision and automatic-summary workflows on their existing path
     // until their complete chain has a server owner as well.
-    const serverEligible = conversation && activeProfile?.baseUrl.trim() && !tools.length &&
+    const serverEligible = conversation && activeProfile?.baseUrl.trim() && tools.every(tool => tool.function.name === 'web_search') &&
       !settings.summarizerEnabled && !extraMessages && !toolResults && mode !== 'replace' &&
       (mode === 'regenerate' || conversation.messages[conversation.messages.length - 1]?.id === targetMessageId) &&
       messages.every(message => typeof message.content === 'string' &&
@@ -580,7 +580,8 @@ export default function App() {
         }
         await serverGeneration.start({ id: crypto.randomUUID(), conversationId: saved.id,
           targetMessageId, mode: mode as 'append' | 'regenerate', expectedUpdatedAt: saved._serverUpdatedAt,
-          profileId: activeProfile!.id, messages: messages as StartGeneration['messages'] })
+          profileId: activeProfile!.id, messages: messages as StartGeneration['messages'],
+          ...(tools.some(tool => tool.function.name === 'web_search') ? { webSearch: true as const } : {}) })
       } catch (error) {
         pushBanner({ title: 'Generowanie nie zostało uruchomione', description: error instanceof Error ? error.message : String(error) })
       } finally {
@@ -1670,7 +1671,9 @@ export default function App() {
               streamingText={isGenerationActive(serverGeneration.job) ? (activeProfile?.streamingEnabled === false ? '' : serverGeneration.job!.content) : streamingText}
               replacingMessageId={isGenerationActive(serverGeneration.job) && serverGeneration.job?.mode === 'regenerate' ? serverGeneration.job.targetMessageId : replacingMessageId}
               generationNotice={serverGeneration.notice || (isGenerationActive(serverGeneration.job)
-                ? 'Generowanie na serwerze — możesz wygasić ekran.'
+                ? serverGeneration.job?.phase === 'web-search' ? 'Wyszukiwanie na serwerze — możesz wygasić ekran.'
+                  : serverGeneration.job?.phase === 'follow-up' ? 'Odpowiedź z wynikami wyszukiwania na serwerze — możesz wygasić ekran.'
+                  : 'Generowanie na serwerze — możesz wygasić ekran.'
                 : isTyping || toolRunning ? 'Ten workflow działa jeszcze w przeglądarce — pozostaw ją aktywną.' : '')}
               generationResult={serverGeneration.job && !isGenerationActive(serverGeneration.job) && serverGeneration.job.status !== 'succeeded' ? serverGeneration.job : null}
               onSend={handleSend}

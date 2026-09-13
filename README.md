@@ -149,14 +149,14 @@ The application is usable and suitable for a trusted group on a LAN or VPN. Know
 - **Conversation settings on conflict:** persona, style, and lorebook selection on a conversation use a preference for the local value only when it is set. Clearing a setting on one device may revive the value from another device on the next merge. Per-field versioning is planned.
 - **Conversation save queue:** each conversation change triggers an independent PUT. Rapid edits on slow networks may benefit from a save queue and a visible saving/error indicator; this is planned.
 - **API profile preset exchange:** explicit JSON export/import, with optional inclusion of API keys, is not yet implemented. Configure each profile manually per account for now.
-- **Background generation:** plain text generation and regeneration use durable server jobs when tools and automatic summaries are disabled and the prompt has no multimodal content. The UI reconnects after phone sleep or reload. Tools, images, automatic summaries, and regeneration from an older user turn still use the browser workflow; a visible notice identifies that path.
+- **Background generation:** text generation/regeneration and web search use durable server jobs when image tools and automatic summaries are disabled and the prompt has no multimodal content. The UI reconnects after phone sleep or reload. Images, automatic summaries, and regeneration from an older user turn still use the browser workflow; a visible notice identifies that path.
 - **Ministral reasoning — open, deferred:** a direct LM Studio API test returned empty `reasoning_content` and zero `reasoning_tokens`; TAVO also showed no separate reasoning. Whether this depends on model behavior, its chat template, the system prompt, or LM Studio settings remains unresolved. The frontend supports dedicated reasoning fields and leading `[THINK]` / `<think>` blocks; no prompt is added to force reasoning.
 - **Summarizer boundary:** the summarizer marks the current message count as processed; messages appended during summarization may be skipped in the next cycle. Message-ID based tracking is planned.
 - **Large `App.tsx`:** logic for saving, generation, and image handling is scheduled to be extracted into dedicated modules.
 
 Existing legacy image fields (`portrait`, `avatar`, `data`) are retained for compatibility with older data and will not be removed without a migration.
 
-The staged server-generation migration is tracked in [the implementation notes](docs/server-generation.md). The shared response reader is in `shared/llm`; the UI now connects to durable text jobs. Full tool and image workflows are the next stage.
+The staged server-generation migration is tracked in [the implementation notes](docs/server-generation.md). Shared response parsing, prompt normalization and search formatting are in `shared/llm`; the UI connects to durable text and search jobs. Image workflows are the next stage.
 
 ## Network access
 

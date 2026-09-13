@@ -572,6 +572,7 @@ export default function ChatView({
             <div className="max-h-40 overflow-auto whitespace-pre-wrap break-words pt-2">
               {generationResult.error && <p>{generationResult.error}</p>}
               <p>{generationResult.content || 'Brak zapisanego tekstu odpowiedzi.'}</p>
+              {generationResult.toolCall?.results.map((result, index) => <p key={index}>{result.title}{'\n'}{result.snippet}{'\n'}{result.url}</p>)}
               {generationResult.thinking && <details><summary>Reasoning</summary>{generationResult.thinking}</details>}
             </div>
           </details>

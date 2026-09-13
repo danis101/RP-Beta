@@ -13,11 +13,14 @@ after(() => {
 writeFileSync(path.join(output, 'package.json'), '{"type":"commonjs"}')
 execFileSync(process.execPath, [
   require.resolve('../../frontend/node_modules/typescript/bin/tsc'),
-  'sync/src/generation/store.ts', 'sync/src/generation/runner.ts',
+  'sync/src/generation/store.ts', 'sync/src/generation/runner.ts', 'sync/src/generation/searchWorkflow.ts',
   '--module', 'commonjs', '--target', 'ES2022', '--lib', 'ES2022,DOM', '--strict', '--skipLibCheck', '--rootDir', '.', '--outDir', output,
 ], { cwd: path.join(__dirname, '../..'), stdio: 'pipe' })
 const { GenerationStore } = require(path.join(output, 'sync/src/generation/store.js'))
 const { GenerationRunner } = require(path.join(output, 'sync/src/generation/runner.js'))
+const { publicJob } = require(path.join(output, 'sync/src/generation/store.js'))
+const { searchWorkflow } = require(path.join(output, 'sync/src/generation/searchWorkflow.js'))
+const { parseSearchResults, searchFollowUp } = require(path.join(output, 'shared/llm/webSearch.js'))
 
 function setup(t) {
   const sql = new DatabaseSync(':memory:')
@@ -38,7 +41,7 @@ function setup(t) {
   const request = { id: 'job', conversationId: 'chat', targetMessageId: target.id, mode: 'append', expectedUpdatedAt: 20, profileId: 'model', messages: [{ role: 'user', content: 'hello' }] }
   const readChat = () => JSON.parse(sql.prepare("SELECT data_json FROM entities WHERE user_id='a'").get().data_json)
   const writeChat = chat => sql.prepare("UPDATE entities SET data_json=?,updated_at=updated_at+1 WHERE user_id='a'").run(JSON.stringify(chat))
-  return { sql, store, request, readChat, writeChat }
+  return { sql, port, store, request, readChat, writeChat }
 }
 
 test('admission is idempotent, scoped to owner, and rejects concurrent/stale requests', t => {
@@ -139,4 +142,123 @@ test('regeneration appends a variant; concurrent target edits preserve result as
   assert.equal(store.complete('a', second.id, 'do not overwrite edit', ''), false)
   assert.equal(readChat().messages[1].variants[1].content, 'manual edit')
   assert.equal(store.get('a', second.id).status, 'conflict')
+})
+
+const searchResults = [{ title: 'Title', url: 'https://example.test', snippet: 'Fact', source: 'fixture' }]
+const searchCall = (name = 'web_search', args = '{"query":"question"}') => ({ id: 'tool1', type: 'function', function: { name, arguments: args } })
+const sse = (content, toolCalls = []) => new Response(`data: ${JSON.stringify({ choices: [{ delta: { content, tool_calls: toolCalls.map((call, index) => ({ ...call, index })) } }] })}\n\ndata: [DONE]\n\n`)
+
+test('search workflow completes both model passes, preserves prompt order and publishes one message with sources', async t => {
+  const { store, request, readChat } = setup(t)
+  const messages = [{ role: 'system', content: 'SYSTEM\n\nLORE' }, { role: 'user', content: 'question' }]
+  const job = store.start('a', { ...request, webSearch: true, messages }).job
+  let published, searches = 0
+  const done = new Promise(resolve => { published = resolve })
+  const runner = new GenerationRunner(store, published)
+  const payloads = []
+  const workflow = searchWorkflow({ messages, enabled: () => true, showResults: true,
+    open: async value => {
+      payloads.push(value)
+      // An additional tool call in pass two must not start a third pass.
+      return sse(payloads.length === 1 ? 'Searching' : 'Final answer', [searchCall()])
+    },
+    search: async () => { searches++; assert.equal(publicJob(store.get('a', job.id)).phase, 'web-search'); return searchResults },
+  })
+  runner.start(job, () => { throw Error('plain path must not run') }, workflow)
+  await done
+  assert.equal(searches, 1)
+  assert.equal(payloads.length, 2)
+  assert.deepEqual(payloads[0], messages)
+  assert.deepEqual(payloads[1], [messages[0], { role: 'user', content: `question\n\n${searchFollowUp('question', searchResults).content}` }])
+  assert.equal(readChat().messages.length, 2)
+  assert.deepEqual(readChat().messages[1].variants[0], { content: 'Final answer', toolCall: { type: 'websearch', label: 'question', results: searchResults } })
+  assert.equal(publicJob(store.get('a', job.id)).toolCall.results[0].snippet, 'Fact')
+  await new Promise(resolve => setImmediate(resolve))
+})
+
+test('search permissions are checked at execution; unsolicited image and unknown tools never execute', async () => {
+  for (const enabled of [false, true]) {
+    let searches = 0
+    const result = await searchWorkflow({ messages: [{ role: 'user', content: 'hello' }], enabled: () => enabled, showResults: true,
+      open: async () => sse('answer', enabled ? [searchCall('generate_image'), searchCall('unknown')] : [searchCall()]),
+      search: async () => { searches++; return searchResults },
+    })(new AbortController().signal, () => {})
+    assert.equal(searches, 0)
+    assert.equal(result.content, 'answer')
+  }
+})
+
+test('empty results and invalid tool arguments do not add a follow-up; search errors keep existing error wording', async () => {
+  for (const scenario of ['empty', 'invalid', 'error']) {
+    let passes = 0, searches = 0
+    const result = await searchWorkflow({ messages: [{ role: 'user', content: 'hello' }], enabled: () => true, showResults: true,
+      open: async () => { passes++; return sse('answer', [searchCall('web_search', scenario === 'invalid' ? '{bad' : '{"query":"question"}')]) },
+      search: async () => { searches++; if (scenario === 'error') throw Error('offline'); return [] },
+    })(new AbortController().signal, () => {})
+    assert.equal(passes, 1)
+    assert.equal(searches, scenario === 'invalid' ? 0 : 1)
+    assert.equal(result.content, scenario === 'error' ? 'answer\n\nBlad wykonania narzedzia: offline' : 'answer')
+  }
+})
+
+test('Stop during search aborts the tool and prevents the follow-up and publication', async t => {
+  const { store, request, readChat } = setup(t)
+  const job = store.start('a', { ...request, webSearch: true }).job
+  const runner = new GenerationRunner(store, () => assert.fail('cancelled job published'))
+  let entered, passes = 0, toolSignal
+  const started = new Promise(resolve => { entered = resolve })
+  runner.start(job, () => assert.fail('plain path'), searchWorkflow({ messages: request.messages, enabled: () => true, showResults: true,
+    open: async () => { passes++; return sse('Searching', [searchCall()]) },
+    search: (_query, signal) => new Promise((_resolve, reject) => {
+      toolSignal = signal; entered(); signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+    }),
+  }))
+  await started
+  runner.cancel('a', job.id)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(toolSignal.aborted, true)
+  assert.equal(passes, 1)
+  assert.equal(store.get('a', job.id).status, 'cancelled')
+  assert.equal(readChat().messages.length, 1)
+})
+
+test('search sources survive conflicts and restart; hidden sources are omitted from final variant', async t => {
+  const { store, request, readChat, writeChat } = setup(t)
+  const job = store.start('a', request).job
+  store.update('a', job.id, 'running', 'partial', '')
+  const tool = { type: 'websearch', label: 'question', results: searchResults }
+  store.workflow('a', job.id, 'follow-up', tool)
+  const chat = readChat(); chat.messages[0].variants[0].content = 'edited'; writeChat(chat)
+  assert.equal(store.complete('a', job.id, 'answer', '', tool), false)
+  assert.deepEqual(publicJob(store.get('a', job.id)).toolCall, tool)
+  assert.equal(readChat().messages[0].variants[0].content, 'edited')
+  const second = store.start('a', { ...request, id: 'second', expectedUpdatedAt: 21 }).job
+  store.workflow('a', second.id, 'web-search', tool)
+  store.recover()
+  assert.equal(publicJob(store.get('a', second.id)).status, 'interrupted')
+  assert.deepEqual(publicJob(store.get('a', second.id)).toolCall, tool)
+  let passes = 0
+  const result = await searchWorkflow({ messages: request.messages, enabled: () => true, showResults: false,
+    open: async () => ++passes === 1 ? sse('', [searchCall()]) : sse('answer'), search: async () => searchResults,
+  })(new AbortController().signal, () => {})
+  assert.equal(result.content, 'answer')
+  assert.equal(result.toolCall, undefined)
+})
+
+test('search parsing preserves result and infobox fallbacks and result limit', () => {
+  assert.deepEqual(parseSearchResults({ results: [{ url: 'url', content: 'snippet', engine: 'engine' }, { title: 'excess' }] }, 1),
+    [{ title: 'url', url: 'url', snippet: 'snippet', source: 'engine' }])
+  assert.deepEqual(parseSearchResults({ infoboxes: [{ infobox: 'Title', id: 'url', content: 'Fact' }] }, 5),
+    [{ title: 'Title', url: 'url', snippet: 'Fact', source: 'Infobox' }])
+})
+
+test('workflow migration preserves existing jobs and can be rerun', t => {
+  const { sql, port, store, request } = setup(t)
+  const job = store.start('a', request).job
+  sql.exec('ALTER TABLE generation_jobs DROP COLUMN workflow_json')
+  const migrated = new GenerationStore(port)
+  assert.equal(migrated.get('a', job.id).request_json, job.request_json)
+  assert.equal(migrated.get('a', job.id).workflow_json, '{}')
+  new GenerationStore(port)
+  assert.equal(migrated.get('a', job.id).status, 'queued')
 })

@@ -13,6 +13,8 @@ export interface GenerationJob {
   revision: number
   createdAt: number
   updatedAt: number
+  phase?: 'model' | 'web-search' | 'follow-up'
+  toolCall?: { type: 'websearch'; label: string; results: Array<{ title: string; url: string; snippet: string; source: string }> }
 }
 
 export interface StartGeneration {
@@ -22,6 +24,7 @@ export interface StartGeneration {
   mode: 'append' | 'regenerate'
   expectedUpdatedAt: number
   profileId: string
+  webSearch?: true
   messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>
 }
 

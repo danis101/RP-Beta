@@ -1,5 +1,6 @@
 import type { ToolDef } from './types'
 import { searchWeb } from '../tools'
+import { searchFollowUp, webSearchDeclaration } from '../../../../shared/llm/webSearch'
 
 /**
  * Narzędzie web_search — wyszukiwanie internetowe (SearXNG).
@@ -9,24 +10,7 @@ import { searchWeb } from '../tools'
 export const webSearchTool: ToolDef = {
   name: 'web_search',
   enabledSetting: 'webSearchEnabled',
-  declaration: {
-    type: 'function',
-    function: {
-      name: 'web_search',
-      description:
-        'Search the internet for up-to-date information. Use this when you need current information, recent events, or specific facts that may not be in your training data.',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: {
-            type: 'string',
-            description: 'The search query. Be specific and include relevant keywords.',
-          },
-        },
-        required: ['query'],
-      },
-    },
-  },
+  declaration: webSearchDeclaration,
   async run(args, _call, ctx) {
     const query = typeof args.query === 'string' ? args.query : ''
     const results = await searchWeb(
@@ -41,20 +25,13 @@ export const webSearchTool: ToolDef = {
       return {}
     }
 
-    const summary = results
-      .map((r, i) => `${i + 1}. ${r.title}\n   ${r.snippet}\n   Źródło: ${r.url}`)
-      .join('\n\n')
-
     return {
       toolCall: {
         type: 'websearch',
         label: query,
         results,
       },
-      message: {
-        role: 'system',
-        content: `[Wyniki wyszukiwania dla: "${query}"]\n\n${summary}\n\nNa podstawie tych informacji, odpowiedz w roli postaci, używając swojego stylu. Nie cytuj surowych wyników – wpleć je naturalnie w odpowiedź.`,
-      },
+      message: searchFollowUp(query, results),
       followUp: true,
     }
   },
