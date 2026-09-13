@@ -13,10 +13,10 @@ execFileSync(process.execPath, [
   require.resolve('typescript/bin/tsc'),
   'src/lib/conversationMerge.ts', 'src/lib/messages.ts',
   '--module', 'commonjs', '--target', 'ES2020', '--strict', '--skipLibCheck',
-  '--outDir', output,
+  '--rootDir', '..', '--outDir', output,
 ], { cwd: path.join(__dirname, '..'), stdio: 'pipe' })
-const { mergeConversations: merge } = require(path.join(output, 'lib/conversationMerge.js'))
-const { updateMessage } = require(path.join(output, 'lib/messages.js'))
+const { mergeConversations: merge } = require(path.join(output, 'frontend/src/lib/conversationMerge.js'))
+const { updateMessage } = require(path.join(output, 'frontend/src/lib/messages.js'))
 
 const message = (id, timestamp = 10, extra = {}) => ({
   id, role: 'assistant', variants: [{ content: id }], selectedVariant: 0, timestamp, ...extra,

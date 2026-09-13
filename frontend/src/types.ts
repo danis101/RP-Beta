@@ -202,14 +202,7 @@ export interface MessageAttachment {
   name?: string
 }
 
-export interface APIToolCall {
-  id: string
-  type: 'function'
-  function: {
-    name: string
-    arguments: string
-  }
-}
+export type { APIToolCall } from '../../shared/llm/types'
 
 export interface MessageVariant {
   content: string

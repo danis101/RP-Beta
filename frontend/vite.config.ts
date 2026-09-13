@@ -1,5 +1,6 @@
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
+import { fileURLToPath } from 'node:url'
 
 /**
  * Proxy dla developmentu — rozwiązuje problem CORS dla LLM, SearXNG i mostka obrazów.
@@ -157,5 +158,8 @@ export default defineConfig({
   plugins: [react(), proxyPlugin()],
   server: {
     port: 5173,
+    fs: {
+      allow: [fileURLToPath(new URL('.', import.meta.url)), fileURLToPath(new URL('../shared', import.meta.url))],
+    },
   },
 })

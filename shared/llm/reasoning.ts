@@ -1,3 +1,4 @@
+// Shared by browser and server. No storage, DOM or model-specific configuration.
 const REASONING_TAGS = [
   { open: '<think>', close: '</think>' },
   { open: '[think]', close: '[/think]' },

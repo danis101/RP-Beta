@@ -150,10 +150,13 @@ The application is usable and suitable for a trusted group on a LAN or VPN. Know
 - **Conversation save queue:** each conversation change triggers an independent PUT. Rapid edits on slow networks may benefit from a save queue and a visible saving/error indicator; this is planned.
 - **API profile preset exchange:** explicit JSON export/import, with optional inclusion of API keys, is not yet implemented. Configure each profile manually per account for now.
 - **Background generation:** the browser still manages response generation and tool execution. Phone sleep or a suspended browser can interrupt receiving a response; durable server-managed generation is planned.
+- **Ministral reasoning — open, deferred:** a direct LM Studio API test returned empty `reasoning_content` and zero `reasoning_tokens`; TAVO also showed no separate reasoning. Whether this depends on model behavior, its chat template, the system prompt, or LM Studio settings remains unresolved. The frontend supports dedicated reasoning fields and leading `[THINK]` / `<think>` blocks; no prompt is added to force reasoning.
 - **Summarizer boundary:** the summarizer marks the current message count as processed; messages appended during summarization may be skipped in the next cycle. Message-ID based tracking is planned.
 - **Large `App.tsx`:** logic for saving, generation, and image handling is scheduled to be extracted into dedicated modules.
 
 Existing legacy image fields (`portrait`, `avatar`, `data`) are retained for compatibility with older data and will not be removed without a migration.
+
+The staged server-generation migration is tracked in [the implementation notes](docs/server-generation.md). The shared response reader is in `shared/llm`; generation still runs in the browser at this stage.
 
 ## Network access
 
@@ -244,4 +247,3 @@ RP-Beta/
 ## License
 
 A project license has not been specified yet.
-

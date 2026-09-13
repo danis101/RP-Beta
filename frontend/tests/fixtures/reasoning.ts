@@ -1,2 +1,2 @@
 export { OpenAIAdapter } from '../../src/services/api/OpenAIAdapter'
-export { ReasoningParser } from '../../src/services/api/reasoning'
+export { ReasoningParser } from '../../../shared/llm/reasoning'

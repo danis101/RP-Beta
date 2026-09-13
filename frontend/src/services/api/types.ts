@@ -1,5 +1,6 @@
 import type { OpenAIMessage, ToolDefinition } from './OpenAIAdapter'
-import type { APIToolCall } from '../../types'
+import type { StreamCallbacks } from '../../../../shared/llm/types'
+export type { StreamCallbacks } from '../../../../shared/llm/types'
 
 export interface SendMessageParams {
   /** Gotowa lista wiadomości (z system promptem i injekcjami). */
@@ -12,14 +13,6 @@ export interface SendMessageParams {
   onThinking?: (text: string) => void
   /** Narzedzia dozwolone dla tego wywolania. Brak/pusta lista = bez narzedzi. */
   tools?: ToolDefinition[]
-}
-
-export interface StreamCallbacks {
-  onToken: (token: string) => void
-  onThinking?: (token: string) => void
-  onToolCalls?: (toolCalls: APIToolCall[]) => void
-  onDone: () => void
-  onError: (error: Error) => void
 }
 
 export interface ModelInfo {

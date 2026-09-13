@@ -15,6 +15,7 @@ RUN npm install
 
 # Potem źródła i build
 COPY frontend/ ./
+COPY shared/ /shared/
 RUN npm run build
 
 # --- Stage 2: runtime backendu ---
@@ -29,6 +30,7 @@ RUN bun install --production
 # Źródła backendu
 COPY sync/tsconfig.json ./
 COPY sync/src ./src
+COPY shared/ /shared/
 
 # Statyki frontendu z stage 1 → /app/public
 COPY --from=frontend-builder /frontend/dist ./public
