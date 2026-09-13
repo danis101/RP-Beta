@@ -1,8 +1,4 @@
 {
-  "aiMergeInitialSystem": "Scal początkowe instrukcje systemowe",
-  "aiMergeInitialSystemHint": "Łączy początkowe bloki system promptu i lorebooków w jedną wiadomość, zachowując treść i kolejność. Instrukcje w środku rozmowy pozostają na swoich miejscach.",
-  "aiInitialUserMessage": "Wiadomość startowa przed powitaniem",
-  "aiInitialUserMessageHint": "Dla modeli wymagających rozpoczęcia historii przez użytkownika (np. Ministral). Dodaje „Start new chat as [imię postaci].” przed początkowym powitaniem, tylko w żądaniu do modelu. Nie naprawia innych konfliktów kolejności ról.",
   "chatInsertQuotes": "Otocz cudzysłowami",
   "chatInsertAsterisks": "Otocz gwiazdkami",
   "chatInsertBackticks": "Otocz znakami `",

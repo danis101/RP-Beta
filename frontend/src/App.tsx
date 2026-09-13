@@ -28,7 +28,7 @@ import {
 import { ConflictError } from './services/sync/client'
 import { getBlobAsDataUrl } from './lib/blobCache'
 import { mergeConversations } from './lib/conversationMerge'
-import { addInitialUserMessage, mergeInitialSystemMessages } from './lib/chatCompatibility'
+import { prepareChatMessages } from './lib/chatCompatibility'
 import { buildSystemPrompt } from './lib/prompt'
 import { buildStyledSystemPrompt, getStyledChatInjections } from './lib/style'
 import { activateLorebooks } from './lib/lorebook'
@@ -514,11 +514,7 @@ export default function App() {
       messages.push({ role: 'system', content })
     }
 
-    return addInitialUserMessage(
-      mergeInitialSystemMessages(messages, activeProfile?.mergeInitialSystemMessages),
-      activeProfile?.initialUserMessageEnabled,
-      activeCharacter.name,
-    )
+    return messages
   }
 
   const runCompletion = async (
@@ -541,7 +537,10 @@ export default function App() {
     let toolCalls: APIToolCall[] = []
 
     const baseMessages = await buildMessages(history)
-    const messages = extraMessages ? [...baseMessages, ...extraMessages] : baseMessages
+    const messages = prepareChatMessages(
+      extraMessages ? [...baseMessages, ...extraMessages] : baseMessages,
+      activeCharacter?.name ?? 'Assistant',
+    )
     setLastPrompt({ messages, model: activeProfile?.model ?? 'mock' })
 
     const useStreaming = activeProfile?.streamingEnabled ?? true

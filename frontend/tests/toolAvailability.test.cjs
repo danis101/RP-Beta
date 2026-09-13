@@ -3,7 +3,7 @@ const assert = require('node:assert/strict')
 const path = require('node:path')
 const Module = require('node:module')
 
-let OpenAIAdapter, buildToolDeclarations, getTool, addInitialUserMessage, mergeInitialSystemMessages
+let OpenAIAdapter, buildToolDeclarations, getTool, prepareChatMessages
 before(async () => {
   // Vite compiles the real browser modules (including import.meta.env) for Node.
   // No files, model requests or application server are needed.
@@ -19,7 +19,7 @@ before(async () => {
   const compiled = new Module(__filename, module)
   compiled.paths = module.paths
   compiled._compile(bundle.output.find(item => item.type === 'chunk' && item.isEntry).code, __filename)
-  ;({ OpenAIAdapter, buildToolDeclarations, getTool, addInitialUserMessage, mergeInitialSystemMessages } = compiled.exports)
+  ;({ OpenAIAdapter, buildToolDeclarations, getTool, prepareChatMessages } = compiled.exports)
 })
 
 for (const [webSearchEnabled, imageGenEnabled, names] of [
@@ -91,28 +91,25 @@ test('initial user compatibility preserves greeting and history, and is idempote
     { role: 'user', content: 'now?' },
   ]
   const snapshot = structuredClone(messages)
-  for (const enabled of [undefined, false]) {
-    assert.equal(addInitialUserMessage(messages, enabled, 'Alice'), messages)
-  }
-  const prepared = addInitialUserMessage(messages, true, 'Alice')
+  const prepared = prepareChatMessages(messages, 'Alice')
   assert.deepEqual(prepared, [messages[0], { role: 'user', content: 'Start new chat as Alice.' }, ...messages.slice(1)])
   assert.deepEqual(messages, snapshot)
-  assert.equal(addInitialUserMessage(prepared, true, 'Alice'), prepared)
+  assert.deepEqual(prepareChatMessages(prepared, 'Alice'), prepared)
 })
 
-test('initial user compatibility leaves user-first, empty and tool-first histories unchanged', () => {
+test('user-first histories are preserved; initial greeting regeneration gets a user turn', () => {
   for (const messages of [
-    [], [{ role: 'system', content: 'prompt' }],
     [{ role: 'user', content: 'hello' }],
     [{ role: 'system', content: 'prompt' }, { role: 'user', content: 'hello' }],
-    [{ role: 'assistant', content: '', tool_calls: [{ id: 'call', type: 'function', function: { name: 'web_search', arguments: '{}' } }] }],
-    [{ role: 'tool', tool_call_id: 'call', content: 'result' }],
   ]) {
-    assert.equal(addInitialUserMessage(messages, true, 'Alice'), messages)
+    assert.deepEqual(prepareChatMessages(messages, 'Alice'), messages)
   }
-  assert.deepEqual(addInitialUserMessage([{ role: 'assistant', content: 'Hello' }], true, 'Alice'), [
+  assert.deepEqual(prepareChatMessages([{ role: 'assistant', content: 'Hello' }], 'Alice'), [
     { role: 'user', content: 'Start new chat as Alice.' }, { role: 'assistant', content: 'Hello' },
   ])
+  for (const messages of [[], [{ role: 'system', content: 'prompt' }]]) {
+    assert.deepEqual(prepareChatMessages(messages, 'Alice'), [...messages, { role: 'user', content: 'Start new chat as Alice.' }])
+  }
 })
 
 for (const streaming of [false, true]) {
@@ -132,7 +129,7 @@ for (const streaming of [false, true]) {
       { role: 'assistant', content: '', tool_calls: [toolCall] },
       { role: 'tool', tool_call_id: 'call', content: 'result' },
     ]
-    const params = { messages: [...addInitialUserMessage(mergeInitialSystemMessages(history, true), true, 'Alice'), ...followUp], tools }
+    const params = { messages: prepareChatMessages([...history, ...followUp], 'Alice'), tools }
     const adapter = new OpenAIAdapter({ baseUrl: 'http://model.test', apiKey: '', model: 'local-model' })
     if (streaming) {
       await adapter.streamMessage(params, { onToken() {}, onDone() {}, onError(error) { throw error } })
@@ -146,21 +143,95 @@ for (const streaming of [false, true]) {
   })
 }
 
-test('system merge preserves exact block content and ordering without moving later instructions', () => {
+test('normalization preserves block text and ordering; later system stays in the same user turn', () => {
   const messages = [
     { role: 'system', content: '  Lore A\n' }, { role: 'system', content: 'Lore B' },
     { role: 'system', content: 'Character prompt' }, { role: 'assistant', content: 'Greeting' },
     { role: 'user', content: 'Question' }, { role: 'system', content: 'Depth injection' },
   ]
   const snapshot = structuredClone(messages)
-  for (const enabled of [false, undefined]) assert.equal(mergeInitialSystemMessages(messages, enabled), messages)
-  const merged = mergeInitialSystemMessages(messages, true)
-  assert.deepEqual(merged, [{ role: 'system', content: '  Lore A\n\n\nLore B\n\nCharacter prompt' }, ...messages.slice(3)])
+  const merged = prepareChatMessages(messages, 'Alice')
+  assert.deepEqual(merged, [
+    { role: 'system', content: '  Lore A\n\n\nLore B\n\nCharacter prompt' },
+    { role: 'user', content: 'Start new chat as Alice.' },
+    messages[3], { role: 'user', content: 'Question\n\nDepth injection' },
+  ])
   assert.deepEqual(messages, snapshot)
-  assert.equal(mergeInitialSystemMessages(merged, true), merged)
-  for (const input of [[], [{ role: 'user', content: 'Hi' }], [{ role: 'system', content: 'One' }]]) {
-    assert.equal(mergeInitialSystemMessages(input, true), input)
-  }
+  assert.deepEqual(prepareChatMessages(merged, 'Alice'), merged)
+})
+
+test('logged RP pattern becomes alternating turns with no late system or missing blocks', () => {
+  const messages = [
+    { role: 'system', content: 'lore A' }, { role: 'system', content: 'character' },
+    { role: 'assistant', content: 'greeting' }, { role: 'user', content: 'question' },
+    { role: 'assistant', content: 'answer' }, { role: 'user', content: 'next question' },
+    { role: 'system', content: 'style A' }, { role: 'system', content: 'anatomy' },
+    { role: 'user', content: 'persona' }, { role: 'user', content: 'card details' },
+    { role: 'system', content: 'character rule' }, { role: 'user', content: 'history marker' },
+    { role: 'system', content: 'current time' }, { role: 'system', content: 'image instructions' },
+  ]
+  const prepared = prepareChatMessages(messages, 'Alice')
+  assert.deepEqual(prepared.map(message => message.role), ['system', 'user', 'assistant', 'user', 'assistant', 'user'])
+  assert.equal(prepared[5].content, messages.slice(5).map(message => message.content).join('\n\n'))
+  assert.equal(prepared[0].content, 'lore A\n\ncharacter')
+})
+
+test('injections between older turns stay there; adjacent assistant and user text is retained', () => {
+  const prepared = prepareChatMessages([
+    { role: 'user', content: 'one' }, { role: 'user', content: 'two' },
+    { role: 'assistant', content: 'reply' }, { role: 'assistant', content: 'continuation' },
+    { role: 'system', content: 'depth instruction' }, { role: 'user', content: 'three' },
+    { role: 'assistant', content: 'later reply' }, { role: 'user', content: 'latest' },
+  ], 'Alice')
+  assert.deepEqual(prepared, [
+    { role: 'user', content: 'one\n\ntwo' }, { role: 'assistant', content: 'reply\n\ncontinuation' },
+    { role: 'user', content: 'depth instruction\n\nthree' }, { role: 'assistant', content: 'later reply' },
+    { role: 'user', content: 'latest' },
+  ])
+})
+
+test('vision attachments survive instructions before and after a multimodal user message', () => {
+  const imageA = { type: 'image_url', image_url: { url: 'data:image/png;base64,AA', detail: 'high' } }
+  const imageB = { type: 'image_url', image_url: { url: 'data:image/png;base64,BB' } }
+  const messages = [
+    { role: 'user', content: 'before' },
+    { role: 'user', content: [{ type: 'text', text: 'look' }, imageA, imageB] },
+    { role: 'system', content: 'after' },
+  ]
+  const snapshot = structuredClone(messages)
+  const prepared = prepareChatMessages(messages, 'Alice')
+  assert.equal(prepared.length, 1)
+  assert.equal(prepared[0].role, 'user')
+  assert.deepEqual(prepared[0].content, [
+    { type: 'text', text: 'before' }, { type: 'text', text: '\n\n' },
+    { type: 'text', text: 'look' }, imageA, imageB,
+    { type: 'text', text: '\n\n' }, { type: 'text', text: 'after' },
+  ])
+  assert.deepEqual(messages, snapshot)
+  assert.deepEqual(prepareChatMessages(prepared, 'Alice'), prepared)
+})
+
+test('multiple tool calls, separate results and tool-only assistant content remain intact', () => {
+  const call = id => ({ id, type: 'function', function: { name: 'web_search', arguments: '{"query":"test"}' } })
+  const messages = [
+    { role: 'system', content: 'prompt' }, { role: 'user', content: 'search' },
+    { role: 'assistant', content: null, tool_calls: [call('a'), call('b')] },
+    { role: 'tool', tool_call_id: 'a', content: 'first' }, { role: 'tool', tool_call_id: 'b', content: 'second' },
+    { role: 'assistant', content: 'more', tool_calls: [call('c')] },
+    { role: 'tool', tool_call_id: 'c', content: 'third' }, { role: 'assistant', content: 'answer' },
+    { role: 'user', content: 'next' },
+  ]
+  assert.deepEqual(prepareChatMessages(messages, 'Alice'), messages)
+})
+
+test('web search follow-up instructions are normalized after appending, without dropping results', () => {
+  const messages = [
+    { role: 'system', content: 'character' }, { role: 'user', content: 'search please' },
+    { role: 'system', content: '[Search results]\n1. Result\nSource: https://example.test' },
+  ]
+  assert.deepEqual(prepareChatMessages(messages, 'Alice'), [
+    messages[0], { role: 'user', content: `${messages[1].content}\n\n${messages[2].content}` },
+  ])
 })
 
 for (const wire of [
