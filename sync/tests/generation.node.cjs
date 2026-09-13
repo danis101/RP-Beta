@@ -13,10 +13,11 @@ after(() => {
 writeFileSync(path.join(output, 'package.json'), '{"type":"commonjs"}')
 execFileSync(process.execPath, [
   require.resolve('../../frontend/node_modules/typescript/bin/tsc'),
-  'sync/src/generation/store.ts', 'sync/src/generation/runner.ts', 'sync/src/generation/searchWorkflow.ts', 'sync/src/generation/imageWorkflow.ts', 'sync/src/generation/summaryPlan.ts',
+  'sync/src/generation/store.ts', 'sync/src/generation/runner.ts', 'sync/src/generation/searchWorkflow.ts', 'sync/src/generation/imageWorkflow.ts', 'sync/src/generation/summaryPlan.ts', 'sync/src/generation/retention.ts',
   '--module', 'commonjs', '--target', 'ES2022', '--lib', 'ES2022,DOM', '--strict', '--skipLibCheck', '--rootDir', '.', '--outDir', output,
 ], { cwd: path.join(__dirname, '../..'), stdio: 'pipe' })
 const { GenerationStore } = require(path.join(output, 'sync/src/generation/store.js'))
+const { purgeGenerationJobs, SUCCESS_RETENTION_MS, RECOVERY_RETENTION_MS } = require(path.join(output, 'sync/src/generation/retention.js'))
 const { GenerationRunner } = require(path.join(output, 'sync/src/generation/runner.js'))
 const { publicJob } = require(path.join(output, 'sync/src/generation/store.js'))
 const { searchWorkflow } = require(path.join(output, 'sync/src/generation/searchWorkflow.js'))
@@ -47,6 +48,44 @@ function setup(t) {
   const writeChat = chat => sql.prepare("UPDATE entities SET data_json=?,updated_at=updated_at+1 WHERE user_id='a'").run(JSON.stringify(chat))
   return { sql, port, store, request, readChat, writeChat }
 }
+
+test('retention expires terminal jobs by completion time, preserves active jobs and published answers', t => {
+  const { sql, port, store, request, readChat } = setup(t)
+  store.start('a', request)
+  store.update('a', request.id, 'running', '', '')
+  store.complete('a', request.id, 'published answer', '')
+  const before = readChat()
+  const now = Date.now() + RECOVERY_RETENTION_MS * 2
+  sql.prepare('UPDATE generation_jobs SET updated_at=?').run(now - SUCCESS_RETENTION_MS)
+  // Copy a real execution row to cover every terminal state, age boundary,
+  // and both owners without invoking external models.
+  const insert = sql.prepare(`INSERT INTO generation_jobs
+    (user_id,id,conversation_id,status,request_json,input_json,target_json,result_message_id,created_at,updated_at)
+    SELECT ?1,?2,?2,?3,request_json,input_json,target_json,result_message_id,0,?4
+    FROM generation_jobs WHERE user_id='a' AND id='job'`)
+  for (const owner of ['a', 'b']) {
+    for (const status of ['succeeded', 'failed', 'cancelled', 'interrupted', 'conflict']) {
+      const cutoff = now - (status === 'succeeded' ? SUCCESS_RETENTION_MS : RECOVERY_RETENTION_MS)
+      insert.run(owner, `${status}-expired`, status, cutoff)
+      insert.run(owner, `${status}-recent`, status, cutoff + 1)
+    }
+    insert.run(owner, 'queued', 'queued', 0)
+    insert.run(owner, 'running', 'running', 0)
+  }
+  assert.equal(purgeGenerationJobs(port, now), 11)
+  assert.deepEqual(readChat(), before)
+  assert.equal(store.get('a', 'job'), null)
+  for (const owner of ['a', 'b']) {
+    assert.equal(sql.prepare('SELECT COUNT(*) AS n FROM generation_jobs WHERE user_id=?').get(owner).n, 7)
+    for (const status of ['succeeded', 'failed', 'cancelled', 'interrupted', 'conflict']) {
+      assert.equal(store.get(owner, `${status}-expired`), null)
+      assert.ok(store.get(owner, `${status}-recent`))
+    }
+    assert.ok(store.get(owner, 'queued'))
+    assert.ok(store.get(owner, 'running'))
+  }
+  assert.equal(purgeGenerationJobs(port, now), 0)
+})
 
 test('admission is idempotent, scoped to owner, and rejects concurrent/stale requests', t => {
   const { store, request } = setup(t)
@@ -383,7 +422,7 @@ test('GC protects a conflict image for its owner, but not another user or a dele
   const module = { exports: {} }, deleted = []
   require('node:vm').runInNewContext(code, {
     exports: module.exports, module, console,
-    require: name => name === './db' ? { db: port } : name === './blobs' ? { deleteBlob: async (user, id) => { deleted.push([user, id]) } } : { MIN_BLOB_AGE_MS: 1000, SOFT_DELETE_RETENTION_MS: 1000, GC_INTERVAL_MS: 1000 },
+    require: name => name === './db' ? { db: port } : name === './generation/retention' ? { purgeGenerationJobs } : name === './blobs' ? { deleteBlob: async (user, id) => { deleted.push([user, id]) } } : { MIN_BLOB_AGE_MS: 1000, SOFT_DELETE_RETENTION_MS: 1000, GC_INTERVAL_MS: 1000 },
   })
   await module.exports.runGarbageCollection()
   assert.deepEqual(deleted, [['b', hash]])
@@ -391,6 +430,16 @@ test('GC protects a conflict image for its owner, but not another user or a dele
   sql.prepare("UPDATE entities SET deleted_at=? WHERE user_id='a'").run(Date.now())
   await module.exports.runGarbageCollection()
   assert.ok(deleted.some(([user]) => user === 'a'))
+  // Restore the chat, then expire only its recovery record. The same GC run
+  // must release the orphan, while an image referenced by the chat survives.
+  sql.prepare("UPDATE entities SET deleted_at=NULL,blob_id=? WHERE user_id='a'").run('c'.repeat(64))
+  sql.prepare('INSERT INTO blobs VALUES(?,?,0)').run('a', 'c'.repeat(64))
+  sql.prepare('UPDATE generation_jobs SET updated_at=?').run(Date.now() - RECOVERY_RETENTION_MS - 1)
+  deleted.length = 0
+  const result = await module.exports.runGarbageCollection()
+  assert.equal(result.purgedJobs, 1)
+  assert.ok(deleted.some(([user, id]) => user === 'a' && id === hash))
+  assert.ok(!deleted.some(([, id]) => id === 'c'.repeat(64)))
 })
 
 test('historical user generation appends at the current end without removing intervening turns', t => {

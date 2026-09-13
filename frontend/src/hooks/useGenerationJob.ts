@@ -52,10 +52,10 @@ export function useGenerationJob(conversationId: string | null, userId: string |
         }
         // Fetch the durable conversation before removing the streaming preview.
         const readKey = latest?.operation === 'summary' && isGenerationActive(latest) ? `${latest.id}:summary` : `${latest?.id}:${latest?.revision}`
-        if (latest && (!isGenerationActive(latest) || latest.operation === 'summary') && applied !== readKey) {
+        if ((!latest || !isGenerationActive(latest) || latest.operation === 'summary') && applied !== readKey) {
           const conversation = await conversationsApi.get(conversationId)
           if (disposed || version !== mutations.current) return
-          callback.current(conversation, latest.status === 'succeeded')
+          callback.current(conversation, latest?.status === 'succeeded')
           applied = readKey
         }
         setJob(latest)
@@ -71,7 +71,9 @@ export function useGenerationJob(conversationId: string | null, userId: string |
       }
     }
     wake.current = () => { void poll() }
-    const resume = () => { if (!document.hidden) void poll() }
+    // A completed job may have expired while this tab was asleep. The durable
+    // conversation still needs refreshing even when the job list is empty.
+    const resume = () => { if (!document.hidden) { applied = ''; void poll() } }
     window.addEventListener('online', resume)
     document.addEventListener('visibilitychange', resume)
     void poll()

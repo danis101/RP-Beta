@@ -22,7 +22,7 @@ Stan na 2026-09-13: **tekst, wyszukiwanie, obrazy, vision, podsumowania i genero
 2. **Trwałe zadanie tekstowe — zaimplementowane, do weryfikacji na Bun/Docker.** Addytywna tabela SQLite, rozpoczęcie/odczyt/anulowanie zadania, identyfikator ponowienia oraz transakcyjny zapis wyniku do właściwej rozmowy. Testy SQLite i wykonawcy uruchomiono lokalnie w Node 24 z kontrolowanym strumieniem, bez modeli i usług zewnętrznych.
 3. **Podłączenie frontendu — tekst potwierdzony na wdrożeniu.** Start zadania, postęp, odczyt po powrocie do rozmowy, osobny Stop i prezentacja zachowanego wyniku przy błędzie/konflikcie/przerwaniu. Logika obserwacji jest w `useGenerationJob`, poza App.tsx.
 4. **Narzędzia i obrazy — zaimplementowane, obrazy czekają na test wdrożenia.** Refiner, mostek, zapis bloba oraz regeneracja dokładnie na zapisanym prompcie działają w zadaniu. Zachowano pierwszy warunek dostępności narzędzia, osobny profil refinera i kolejność wywołań.
-5. **Pozostałe ścieżki — zaimplementowane.** Podsumowania, vision i starszy wpis użytkownika. Domknięcie: test wdrożenia na dwóch urządzeniach, porządki w starych funkcjach, retencja zadań i kolejka zapisów rozmowy.
+5. **Pozostałe ścieżki — zaimplementowane.** Podsumowania, vision i starszy wpis użytkownika. Retencja zadań jest podłączona do GC. Domknięcie: test wdrożenia na dwóch urządzeniach, porządki w starych funkcjach i kolejka zapisów rozmowy.
 
 ## Zasady projektowe dla kolejnego etapu
 
@@ -84,7 +84,15 @@ Zmieniona/usunięta wiadomość docelowa lub nowa wiadomość dodana podczas zwy
 
 Obserwator odczytuje stan aktywnego zadania co 1,5 s, bez aktywnego zadania co 10 s, dodatkowo po powrocie do widocznej karty/online. Wyłączenie streamingu w profilu ukrywa podgląd tokenów; serwer nadal odbiera stream i zapisuje wynik. Utrata odpowiedzi na POST nie powoduje automatycznego ponowienia ani przejścia na generację w przeglądarce. Wynik trafia do rozmowy tylko przez serwer, a frontend scala odczytaną wersję. Wynik ostatniego nieudanego zadania można rozwinąć nad polem wpisywania; nie jest dopisywany jako nowa wiadomość do promptu.
 
-Pozostają: retencja starych zadań, kolejka wszystkich zapisów rozmowy, sprzątanie starych funkcji i test najnowszego etapu na rzeczywistym backendzie. Test wdrożenia: włączyć automatyczne podsumowania (na próbę niski próg), zamknąć przeglądarkę podczas odpowiedzi i sprawdzić pamięć po powrocie. Sprawdzić ręczne podsumowanie, dalsze pisanie w jego trakcie oraz Stop. Włączyć vision i wysłać obraz do modelu obsługującego obrazy, zamknąć przeglądarkę po przyjęciu zadania. Wygenerować odpowiedź od starszego wpisu user: nowa odpowiedź powinna pojawić się na końcu, z zachowaniem późniejszych wiadomości. Sprawdzić też zwykły tekst, wyszukiwanie i obrazy.
+Pozostają: kolejka wszystkich zapisów rozmowy, sprzątanie starych funkcji i test najnowszego etapu na rzeczywistym backendzie. Test wdrożenia: włączyć automatyczne podsumowania (na próbę niski próg), zamknąć przeglądarkę podczas odpowiedzi i sprawdzić pamięć po powrocie. Sprawdzić ręczne podsumowanie, dalsze pisanie w jego trakcie oraz Stop. Włączyć vision i wysłać obraz do modelu obsługującego obrazy, zamknąć przeglądarkę po przyjęciu zadania. Wygenerować odpowiedź od starszego wpisu user: nowa odpowiedź powinna pojawić się na końcu, z zachowaniem późniejszych wiadomości. Sprawdzić też zwykły tekst, wyszukiwanie i obrazy.
+
+## Automatyczne sprzątanie zadań
+
+GC usuwa `succeeded` po 24 godzinach od `updated_at`, a `failed`, `cancelled`, `interrupted` i `conflict` po 7 dniach. `queued` i `running` nie są usuwane niezależnie od wieku. Przebieg odbywa się 5 sekund po starcie serwera i co 24 godziny, więc rekord znika przy pierwszym przebiegu po upływie okresu. Nie zmienia to timeoutów generacji. Indeks `(status, updated_at)` wspiera wyszukiwanie wygasłych rekordów.
+
+Usuwane są techniczne rekordy wraz ze snapshotami promptów, nie wiadomości, warianty ani pamięć zapisane w rozmowach. Wynik pozostawiony wyłącznie w nieudanym zadaniu można odzyskać przez 7 dni. Sprzątanie zadań odbywa się przed zbieraniem referencji do blobów: obraz bez innych referencji może wtedy zostać usunięty przez dotychczasowy GC. Obrazy należące do żywych rozmów nadal są chronione, z rozdzieleniem właścicieli.
+
+Frontend odczytuje rozmowę także przy pustej liście zadań i po wybudzeniu, aby pokazać opublikowaną odpowiedź po wygaśnięciu jej rekordu. Idempotencja po ID działa w okresie przechowywania zadania; frontend nie ponawia automatycznie POST. SQLite wykorzystuje zwolnione miejsce ponownie, ale plik bazy nie musi od razu zmniejszyć rozmiaru. Nie uruchamiamy blokującego `VACUUM` w codziennym GC.
 
 ## Podsumowania, vision i starsza wiadomość
 

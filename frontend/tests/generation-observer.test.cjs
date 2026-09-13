@@ -72,6 +72,22 @@ test('reload discovers active job; reconnect loads durable result exactly once w
   h.unmount()
 })
 
+test('resume reads durable chat after job retention, including an already empty job list', async () => {
+  let items = [active]
+  const h = host({ list: async () => ({ items }) })
+  h.render(); await settle()
+  items = []
+  await h.resume()
+  assert.equal(h.render().job, null)
+  assert.equal(h.render().busy, false)
+  assert.equal(h.received.length, 1)
+  await h.poll()
+  assert.equal(h.received.length, 1)
+  await h.resume()
+  assert.equal(h.received.length, 2)
+  h.unmount()
+})
+
 test('offline polling preserves job; unmount never cancels server execution', async () => {
   let offline = false, cancels = 0
   const h = host({ list: async () => { if (offline) throw Error('offline'); return { items: [active] } }, cancel: async () => { cancels++ } })

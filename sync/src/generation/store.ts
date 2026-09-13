@@ -47,7 +47,8 @@ export class GenerationStore {
       created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 1,
       PRIMARY KEY(user_id,id)
     );
-    CREATE INDEX IF NOT EXISTS idx_generation_list ON generation_jobs(user_id,conversation_id,created_at DESC);`)
+    CREATE INDEX IF NOT EXISTS idx_generation_list ON generation_jobs(user_id,conversation_id,created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_generation_retention ON generation_jobs(status,updated_at);`)
     // Additive migration for databases deployed before tool workflows.
     if (!db.query('PRAGMA table_info(generation_jobs)').all().some((column: any) => column.name === 'workflow_json')) {
       db.exec("ALTER TABLE generation_jobs ADD COLUMN workflow_json TEXT NOT NULL DEFAULT '{}'")

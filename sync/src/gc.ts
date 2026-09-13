@@ -1,7 +1,9 @@
 /**
- * Garbage collector dla blobów i soft-deleted encji.
+ * Garbage collector dla zakończonych zadań, blobów i soft-deleted encji.
  *
- * Dwa przebiegi:
+ * Najpierw usuwa stare zadania (udane: 24h, pozostałe zakończone: 7 dni),
+ * bez dotykania aktywnych zadań i wyników zapisanych w rozmowach.
+ * Następnie dwa przebiegi:
  *   1) Hard delete encji z `deleted_at` starszym niż SOFT_DELETE_RETENTION_MS (7 dni).
  *      Fizycznie usuwa wiersze z `entities`.
  *
@@ -23,11 +25,13 @@
 
 import { db } from './db'
 import { deleteBlob } from './blobs'
+import { purgeGenerationJobs } from './generation/retention'
 import { GC_INTERVAL_MS, MIN_BLOB_AGE_MS, SOFT_DELETE_RETENTION_MS } from './config'
 
 const SHA256_RE = /[a-f0-9]{64}/g
 
 export interface GcResult {
+  purgedJobs: number
   purgedEntities: number
   /** Wszystkie bloby bez referencji (niezależnie od wieku). */
   orphanedBlobs: number
@@ -84,6 +88,9 @@ export async function runGarbageCollection(): Promise<GcResult> {
   const entityCutoff = now - SOFT_DELETE_RETENTION_MS
   const blobAgeCutoff = now - MIN_BLOB_AGE_MS
 
+  // Remove expired execution records before collecting their blob references.
+  const purgedJobs = purgeGenerationJobs(db, now)
+
   // 1. Hard delete starych soft-deleted encji.
   const purgeResult = db.run(
     `DELETE FROM entities WHERE deleted_at IS NOT NULL AND deleted_at < ?`,
@@ -125,6 +132,7 @@ export async function runGarbageCollection(): Promise<GcResult> {
   )
 
   const result: GcResult = {
+    purgedJobs,
     purgedEntities,
     orphanedBlobs: potentialOrphans.length,
     protectedYoung,
@@ -134,7 +142,7 @@ export async function runGarbageCollection(): Promise<GcResult> {
   }
 
   console.log(
-    `[gc] encje usunięte: ${purgedEntities}, ` +
+    `[gc] zadania usunięte: ${purgedJobs}, encje usunięte: ${purgedEntities}, ` +
       `sieroty: ${potentialOrphans.length} (ochrona wieku: ${protectedYoung}, ` +
       `skasowane: ${deletedBlobs}, błędy: ${failedDeletes}) ` +
       `w ${result.elapsedMs} ms`,
