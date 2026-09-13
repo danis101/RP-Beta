@@ -1,0 +1,12 @@
+--- a/bridgeimggen.py
++++ b/bridgeimggen.py
+@@ -239,1 +239,8 @@
+-    max_attempts = 60  # 45 sekund max, aby Tavo nie zrobiło timeoutu (60s) przy uwzględnieniu narzutów sieciowych
++    # RP server jobs can wait longer; requests without this header retain 60s.
++    # This only waits for the original prompt_id, never submits another job.
++    try:
++        requested_wait = int(request.headers.get("X-RP-Image-Wait-Seconds", "60"))
++    except (TypeError, ValueError):
++        requested_wait = 60
++    max_attempts = max(60, min(3600, requested_wait))
++

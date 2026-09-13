@@ -1,4 +1,4 @@
-import type { SearchToolCall } from '../../../shared/llm/webSearch'
+import type { WorkflowToolCall, ImageInput } from '../../../shared/llm/imageTypes'
 
 /** SQLite port keeps lifecycle tests runnable without Bun or a production database. */
 export interface JobDatabase {
@@ -16,6 +16,8 @@ export interface StartJob {
   expectedUpdatedAt: number
   profileId: string
   webSearch?: true
+  image?: ImageInput
+  operation?: 'image'
   messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>
 }
 
@@ -71,15 +73,20 @@ export class GenerationStore {
       if (row.updated_at !== request.expectedUpdatedAt) throw new JobError('Rozmowa zmienila sie. Odswiez przed generowaniem.')
       const conversation = JSON.parse(row.data_json)
       const target = conversation.messages?.find((message: any) => message.id === request.targetMessageId)
-      if (!target || conversation._deletedMessageIds?.includes(target.id)) throw new JobError('Wiadomosc docelowa nie istnieje.', 404)
-      if (target.role !== (request.mode === 'append' ? 'user' : 'assistant')) throw new JobError('Nieprawidlowa rola wiadomosci docelowej.', 400)
-      if (request.mode === 'append' && conversation.messages[conversation.messages.length - 1].id !== target.id) throw new JobError('Nowa odpowiedz wymaga ostatniej wiadomosci uzytkownika.')
+      const emptyImage = request.operation === 'image' && request.mode === 'append' && conversation.messages.length === 0 && request.targetMessageId === conversation.id
+      if ((!target && !emptyImage) || conversation._deletedMessageIds?.includes(target?.id)) throw new JobError('Wiadomosc docelowa nie istnieje.', 404)
+      if (!emptyImage && !(request.operation === 'image' && request.mode === 'append') && target.role !== (request.mode === 'append' ? 'user' : 'assistant')) throw new JobError('Nieprawidlowa rola wiadomosci docelowej.', 400)
+      if (request.mode === 'append' && !emptyImage && conversation.messages[conversation.messages.length - 1].id !== target.id) throw new JobError('Nowa odpowiedz wymaga ostatniej wiadomosci.')
+      if (request.image?.prompt !== undefined) {
+        const variant = target?.variants?.[target.selectedVariant] ?? target?.variants?.[0]
+        if (request.operation !== 'image' || request.mode !== 'regenerate' || variant?.toolCall?.type !== 'image' || variant.toolCall.prompt !== request.image.prompt) throw new JobError('Prompt regeneracji nie odpowiada zapisanemu wariantowi obrazu.')
+      }
       if (this.db.query("SELECT id FROM generation_jobs WHERE user_id=? AND conversation_id=? AND status IN ('queued','running')").get(userId, request.conversationId)) {
         throw new JobError('Ta rozmowa ma juz aktywne generowanie.')
       }
       const now = Date.now()
       this.db.run(`INSERT INTO generation_jobs(user_id,id,conversation_id,status,request_json,input_json,target_json,result_message_id,created_at,updated_at)
-        VALUES(?,?,?,'queued',?,?,?,?,?,?)`, [userId, request.id, request.conversationId, JSON.stringify(request), JSON.stringify(modelRequest), JSON.stringify(target),
+        VALUES(?,?,?,'queued',?,?,?,?,?,?)`, [userId, request.id, request.conversationId, JSON.stringify(request), JSON.stringify(modelRequest), JSON.stringify(target ?? null),
         request.mode === 'append' ? crypto.randomUUID() : target.id, now, now])
       return { job: this.get(userId, request.id)!, created: true }
     })()
@@ -100,7 +107,7 @@ export class GenerationStore {
     return this.get(userId, id)
   }
 
-  workflow(userId: string, id: string, phase: string, toolCall?: SearchToolCall): void {
+  workflow(userId: string, id: string, phase: string, toolCall?: WorkflowToolCall): void {
     this.db.run(`UPDATE generation_jobs SET workflow_json=?,revision=revision+1,updated_at=MAX(updated_at+1,?)
       WHERE user_id=? AND id=? AND status IN ('queued','running')`,
       [JSON.stringify({ phase, toolCall }), Date.now(), userId, id])
@@ -112,7 +119,7 @@ export class GenerationStore {
   }
 
   /** Publish against current state, in the same transaction as successful job completion. */
-  complete(userId: string, id: string, content: string, thinking: string, toolCall?: SearchToolCall): boolean {
+  complete(userId: string, id: string, content: string, thinking: string, toolCall?: WorkflowToolCall): boolean {
     return this.db.transaction(() => {
       const job = this.get(userId, id)
       if (!job || job.status !== 'running') return false
@@ -120,13 +127,14 @@ export class GenerationStore {
       const row = this.conversation(userId, job.conversation_id)
       const conversation = row ? JSON.parse(row.data_json) : null
       const target = conversation?.messages?.find((message: any) => message.id === request.targetMessageId)
-      if (!row || !target || conversation._deletedMessageIds?.includes(target.id) ||
-          conversation._deletedMessageIds?.includes(job.result_message_id) || JSON.stringify(target) !== job.target_json ||
-          (request.mode === 'append' && conversation.messages[conversation.messages.length - 1].id !== target.id)) {
+      const emptyImage = request.operation === 'image' && request.mode === 'append' && conversation?.messages?.length === 0 && request.targetMessageId === conversation.id
+      if (!row || (!target && !emptyImage) || conversation._deletedMessageIds?.includes(target?.id) ||
+          conversation._deletedMessageIds?.includes(job.result_message_id) || JSON.stringify(target ?? null) !== job.target_json ||
+          (request.mode === 'append' && !emptyImage && conversation.messages[conversation.messages.length - 1].id !== target.id)) {
         this.update(userId, id, 'conflict', content, thinking, 'Rozmowa lub wiadomosc docelowa zostala zmieniona/usunieta. Wynik zachowano w zadaniu.')
         return false
       }
-      const now = Math.max(Date.now(), row.updated_at + 1, (target._updatedAt ?? target.timestamp ?? 0) + 1)
+      const now = Math.max(Date.now(), row.updated_at + 1, (target?._updatedAt ?? target?.timestamp ?? 0) + 1)
       const variant = { content, ...(thinking ? { thinking } : {}), ...(toolCall ? { toolCall } : {}) }
       if (request.mode === 'append') {
         if (conversation.messages.some((message: any) => message.id === job.result_message_id)) {

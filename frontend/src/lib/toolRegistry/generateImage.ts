@@ -1,3 +1,4 @@
+import { imageDeclaration } from '../../../../shared/llm/imageTypes'
 import type { ToolDef } from './types'
 import { refineImagePrompt } from '../refiner'
 import { generateImage } from '../imageGen'
@@ -17,25 +18,7 @@ import { uploadBlobFromBlob } from '../../services/sync'
 export const generateImageTool: ToolDef = {
   name: 'generate_image',
   enabledSetting: 'imageGenEnabled',
-  declaration: {
-    type: 'function',
-    function: {
-      name: 'generate_image',
-      description:
-        'Generate an image of the current scene or character described in the conversation. Use this when the story calls for a visual of what is happening or how the character currently looks.',
-      parameters: {
-        type: 'object',
-        properties: {
-          description: {
-            type: 'string',
-            description:
-              'Short description of what should be depicted: the character, their current outfit/pose, and the scene. Be concrete.',
-          },
-        },
-        required: ['description'],
-      },
-    },
-  },
+  declaration: imageDeclaration,
   async run(args, _call, ctx) {
     const description = typeof args.description === 'string' ? args.description : ''
     const baseUrl = ctx.settings.imageGenBaseUrl as string | undefined

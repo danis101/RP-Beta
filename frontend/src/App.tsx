@@ -23,7 +23,6 @@ import {
   connectSyncWs,
   isRecentSelfSave,
   SETTINGS_WS_ID,
-  uploadBlobFromBlob,
 } from './services/sync'
 import { ConflictError } from './services/sync/client'
 import { useGenerationJob } from './hooks/useGenerationJob'
@@ -42,8 +41,7 @@ import { useAuth } from './context/AuthContext'
 import { useConflict } from './context/ConflictContext'
 import { generateSummary, shouldSummarize } from './lib/summarizer'
 import { buildToolDeclarations, getTool, type ToolContext, type ToolResult } from './lib/toolRegistry'
-import { generateImage } from './lib/imageGen'
-import { refineImagePrompt } from './lib/refiner'
+import { buildImageRefinerMessages } from './lib/refiner'
 import { startApiStatusPolling, stopApiStatusPolling } from './lib/apiStatus'
 import { useHashRoute } from './lib/hashRoute'
 import NavigationRail, { type AppView } from './components/layout/NavigationRail'
@@ -526,6 +524,35 @@ export default function App() {
     return messages
   }
 
+  const imageInput = (history: ChatMessage[], contextMessages = settings.imageGenContextMessages ?? 6): NonNullable<StartGeneration['image']> => {
+    const [input] = buildImageRefinerMessages({ character: activeCharacter!, persona: activePersona,
+      history, contextMessages, imageStyleDirective: activeConversation?.imageStyleId }, settings.imageGenRefinerPrompt)
+    return { refinerProfileId: refinerProfile?.id ?? 'unconfigured', refinerMessages: [
+      { role: 'system', content: input.system }, { role: 'user', content: input.user },
+    ] }
+  }
+
+  const startImageJob = async (mode: 'append' | 'regenerate', messageId?: string, prompt?: string) => {
+    if (!activeConversation || !activeCharacter || isTyping || toolRunning || serverGeneration.busy) return
+    const controller = new AbortController()
+    abortRef.current = controller
+    setIsTyping(true)
+    try {
+      const saved = await persistConversationInternal(activeConversation, false)
+      if (controller.signal.aborted) return
+      if (!saved || saved._serverUpdatedAt == null) throw new Error('Nie udało się zapisać rozmowy przed generowaniem obrazu.')
+      if (JSON.stringify(saved.messages) !== JSON.stringify(activeConversation.messages)) throw new Error('Rozmowa zmieniła się. Sprawdź ją i ponów generowanie obrazu.')
+      await serverGeneration.start({ id: crypto.randomUUID(), conversationId: saved.id, mode, operation: 'image',
+        targetMessageId: messageId ?? saved.messages[saved.messages.length - 1]?.id ?? saved.id,
+        expectedUpdatedAt: saved._serverUpdatedAt, profileId: activeProfile?.id ?? 'image-only',
+        messages: [{ role: 'user', content: '' }],
+        image: prompt !== undefined ? { prompt } : imageInput(saved.messages, settings.imageGenContextMessages || 6),
+      })
+    } catch (error) {
+      pushBanner({ title: 'Nie uruchomiono generowania obrazu', description: error instanceof Error ? error.message : String(error) })
+    } finally { setIsTyping(false); abortRef.current = null }
+  }
+
   const runCompletion = async (
     history: ChatMessage[],
     targetMessageId: string,
@@ -561,9 +588,9 @@ export default function App() {
     const useStreaming = activeProfile?.streamingEnabled ?? true
     const tools = buildToolDeclarations(settings)
     const conversation = savedConversation ?? activeConversation
-    // Keep image, vision and automatic-summary workflows on their existing path
+    // Keep vision and automatic-summary workflows on their existing path
     // until their complete chain has a server owner as well.
-    const serverEligible = conversation && activeProfile?.baseUrl.trim() && tools.every(tool => tool.function.name === 'web_search') &&
+    const serverEligible = conversation && activeProfile?.baseUrl.trim() &&
       !settings.summarizerEnabled && !extraMessages && !toolResults && mode !== 'replace' &&
       (mode === 'regenerate' || conversation.messages[conversation.messages.length - 1]?.id === targetMessageId) &&
       messages.every(message => typeof message.content === 'string' &&
@@ -581,7 +608,8 @@ export default function App() {
         await serverGeneration.start({ id: crypto.randomUUID(), conversationId: saved.id,
           targetMessageId, mode: mode as 'append' | 'regenerate', expectedUpdatedAt: saved._serverUpdatedAt,
           profileId: activeProfile!.id, messages: messages as StartGeneration['messages'],
-          ...(tools.some(tool => tool.function.name === 'web_search') ? { webSearch: true as const } : {}) })
+          ...(tools.some(tool => tool.function.name === 'web_search') ? { webSearch: true as const } : {}),
+          ...(tools.some(tool => tool.function.name === 'generate_image') ? { image: imageInput(history) } : {}) })
       } catch (error) {
         pushBanner({ title: 'Generowanie nie zostało uruchomione', description: error instanceof Error ? error.message : String(error) })
       } finally {
@@ -946,131 +974,6 @@ export default function App() {
     await runCompletion(saved.messages, userMessage.id, 'append', undefined, undefined, undefined, saved)
   }
 
-  const appendVariant = (messageId: string, variant: MessageVariant): number => {
-    const conv = conversationsRef.current.find((c) => c.id === activeId)
-    const msg = conv?.messages.find((m) => m.id === messageId)
-    if (!msg) return -1
-    const newIdx = msg.variants.length
-
-    setConversations((prev) =>
-      prev.map((c) => {
-        if (c.id !== activeId) return c
-        const messages = c.messages.map((m) => {
-          if (m.id !== messageId) return m
-          return updateMessage(m, {
-            variants: [...m.variants, variant],
-            selectedVariant: m.variants.length,
-          })
-        })
-        const updated: Conversation = { ...c, messages }
-        persistConversation(updated)
-        return updated
-      }),
-    )
-
-    return newIdx
-  }
-
-  const updateVariantAt = (
-    messageId: string,
-    variantIndex: number,
-    patch: Partial<MessageVariant>,
-  ) => {
-    setConversations((prev) =>
-      prev.map((c) => {
-        if (c.id !== activeId) return c
-        const messages = c.messages.map((m) => {
-          if (m.id !== messageId) return m
-          if (variantIndex < 0 || variantIndex >= m.variants.length) return m
-          const variants = [...m.variants]
-          variants[variantIndex] = { ...variants[variantIndex], ...patch }
-          return updateMessage(m, { variants })
-        })
-        const updated: Conversation = { ...c, messages }
-        persistConversation(updated)
-        return updated
-      }),
-    )
-  }
-
-  const regenerateImage = async (messageId: string, prompt: string) => {
-    const baseUrl = settings.imageGenBaseUrl
-    const responseFormat = settings.imageGenResponseFormat
-
-    if (!baseUrl) {
-      appendVariant(messageId, {
-        content: '',
-        toolCall: {
-          type: 'image',
-          label: 'Generowanie obrazu',
-          status: 'error',
-          error: 'Nie ustawiono adresu backendu generowania obrazow.',
-          prompt,
-        },
-      })
-      return
-    }
-
-    const newIdx = appendVariant(messageId, {
-      content: '',
-      toolCall: {
-        type: 'image',
-        label: 'Generowanie obrazu',
-        status: 'generating',
-        prompt,
-      },
-    })
-
-    if (newIdx < 0) return
-
-    try {
-      const result = await generateImage(prompt, { baseUrl, responseFormat })
-
-      if (result.status === 'done') {
-        const blobId = await uploadBlobFromBlob(result.blob, 'regenerated.png')
-        updateVariantAt(messageId, newIdx, {
-          toolCall: {
-            type: 'image',
-            label: 'Wygenerowany obraz',
-            imageBlobId: blobId,
-            status: 'done',
-            prompt,
-          },
-        })
-      } else if (result.status === 'processing') {
-        updateVariantAt(messageId, newIdx, {
-          toolCall: {
-            type: 'image',
-            label: 'Generowanie obrazu',
-            status: 'generating',
-            error: 'Generowanie trwa dluzej niz 45s.',
-            prompt,
-          },
-        })
-      } else {
-        updateVariantAt(messageId, newIdx, {
-          toolCall: {
-            type: 'image',
-            label: 'Generowanie obrazu',
-            status: 'error',
-            error: result.message,
-            prompt,
-          },
-        })
-      }
-    } catch (error) {
-      updateVariantAt(messageId, newIdx, {
-        toolCall: {
-          type: 'image',
-          label: 'Generowanie obrazu',
-          status: 'error',
-          error: error instanceof Error ? error.message : String(error),
-          prompt,
-        },
-      })
-    }
-  }
-
   const handleRegenerate = async (messageId: string) => {
     if (isTyping || toolRunning || serverGeneration.busy) return
     if (!activeConversation) return
@@ -1087,7 +990,7 @@ export default function App() {
       toolCall.prompt &&
       !variant.content.trim()
     ) {
-      await regenerateImage(messageId, toolCall.prompt)
+      await startImageJob('regenerate', messageId, toolCall.prompt)
       return
     }
 
@@ -1452,124 +1355,8 @@ export default function App() {
   }
 
   const handleGenerateImage = async () => {
-    if (!activeConversation || !activeCharacter) return
-    if (!settings.imageGenEnabled) return
-
-    const contextMessages = settings.imageGenContextMessages || 6
-    const baseUrl = settings.imageGenBaseUrl
-    const responseFormat = settings.imageGenResponseFormat
-
-    if (!baseUrl) return
-
-    const tempId = crypto.randomUUID()
-    const tempVariant = {
-      content: '',
-      toolCall: {
-        type: 'image' as const,
-        label: 'Generowanie obrazu',
-        status: 'generating' as const,
-      },
-    }
-
-    const addTemp = (messages: ChatMessage[]): ChatMessage[] => [
-      ...messages,
-      {
-        id: tempId,
-        role: 'assistant' as const,
-        variants: [tempVariant],
-        selectedVariant: 0,
-        timestamp: Date.now(),
-      },
-    ]
-
-    setConversations((prev) =>
-      prev.map((c) => {
-        if (c.id !== activeId) return c
-        const updated: Conversation = { ...c, messages: addTemp(c.messages), unread: 0 }
-        persistConversation(updated)
-        return updated
-      }),
-    )
-
-    try {
-      const prompt = await refineImagePrompt(
-        {
-          character: activeCharacter,
-          persona: activePersona,
-          history: activeConversation.messages,
-          contextMessages,
-          imageStyleDirective: activeConversation.imageStyleId,
-        },
-        settings.imageGenRefinerPrompt,
-        refinerAdapter,
-        refinerProfile?.model,
-      )
-
-      const result = await generateImage(prompt, { baseUrl, responseFormat })
-
-      let finalToolCall: ToolCall
-
-      if (result.status === 'done') {
-        const blobId = await uploadBlobFromBlob(result.blob, 'generated.png')
-        finalToolCall = {
-          type: 'image',
-          label: 'Wygenerowany obraz',
-          imageBlobId: blobId,
-          status: 'done',
-          prompt,
-        }
-      } else if (result.status === 'processing') {
-        finalToolCall = {
-          type: 'image',
-          label: 'Generowanie obrazu',
-          status: 'generating',
-          error: 'Generowanie trwa dluzej niz 45s.',
-          prompt,
-        }
-      } else {
-        finalToolCall = {
-          type: 'image',
-          label: 'Generowanie obrazu',
-          status: 'error',
-          error: result.message,
-          prompt,
-        }
-      }
-
-      setConversations((prev) =>
-        prev.map((c) => {
-          if (c.id !== activeId) return c
-          const messages = c.messages.map((m) =>
-            m.id === tempId
-              ? updateMessage(m, { variants: [{ ...m.variants[0], toolCall: finalToolCall }] })
-              : m,
-          )
-          const updated: Conversation = { ...c, messages }
-          persistConversation(updated)
-          return updated
-        }),
-      )
-    } catch (error) {
-      const errorToolCall: ToolCall = {
-        type: 'image',
-        label: 'Generowanie obrazu',
-        status: 'error',
-        error: error instanceof Error ? error.message : String(error),
-      }
-      setConversations((prev) =>
-        prev.map((c) => {
-          if (c.id !== activeId) return c
-          const messages = c.messages.map((m) =>
-            m.id === tempId
-              ? updateMessage(m, { variants: [{ ...m.variants[0], toolCall: errorToolCall }] })
-              : m,
-          )
-          const updated: Conversation = { ...c, messages }
-          persistConversation(updated)
-          return updated
-        }),
-      )
-    }
+    if (!settings.imageGenEnabled || !settings.imageGenBaseUrl) return
+    await startImageJob('append')
   }
 
   const handleUpdateMemory = (entries: LongTermMemoryEntry[]) => {
@@ -1672,6 +1459,8 @@ export default function App() {
               replacingMessageId={isGenerationActive(serverGeneration.job) && serverGeneration.job?.mode === 'regenerate' ? serverGeneration.job.targetMessageId : replacingMessageId}
               generationNotice={serverGeneration.notice || (isGenerationActive(serverGeneration.job)
                 ? serverGeneration.job?.phase === 'web-search' ? 'Wyszukiwanie na serwerze — możesz wygasić ekran.'
+                  : serverGeneration.job?.phase === 'refiner' ? 'Refiner przygotowuje prompt na serwerze — możesz wygasić ekran.'
+                  : serverGeneration.job?.phase?.startsWith('image-') ? 'Generowanie i zapis obrazu na serwerze — możesz wygasić ekran.'
                   : serverGeneration.job?.phase === 'follow-up' ? 'Odpowiedź z wynikami wyszukiwania na serwerze — możesz wygasić ekran.'
                   : 'Generowanie na serwerze — możesz wygasić ekran.'
                 : isTyping || toolRunning ? 'Ten workflow działa jeszcze w przeglądarce — pozostaw ją aktywną.' : '')}

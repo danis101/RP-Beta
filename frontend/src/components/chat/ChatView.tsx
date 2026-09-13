@@ -11,6 +11,7 @@ import MessageActions from './MessageActions'
 import ConfirmDialog from './ConfirmDialog'
 import ImageStyleDialog from './ImageStyleDialog'
 import type { GenerationJob } from '../../services/sync/generation'
+import { useBlobSrc } from '../../lib/blobCache'
 
 interface ChatViewProps {
   conversationId: string
@@ -103,6 +104,7 @@ export default function ChatView({
   onGenerateImage,
 }: ChatViewProps) {
   const { t } = useI18n()
+  const savedJobImage = useBlobSrc(generationResult?.toolCall?.type === 'image' ? generationResult.toolCall.imageBlobId : undefined)
   const [menuOpen, setMenuOpen] = useState(false)
   const [personaMenuOpen, setPersonaMenuOpen] = useState(false)
   const [styleMenuOpen, setStyleMenuOpen] = useState(false)
@@ -572,7 +574,12 @@ export default function ChatView({
             <div className="max-h-40 overflow-auto whitespace-pre-wrap break-words pt-2">
               {generationResult.error && <p>{generationResult.error}</p>}
               <p>{generationResult.content || 'Brak zapisanego tekstu odpowiedzi.'}</p>
-              {generationResult.toolCall?.results.map((result, index) => <p key={index}>{result.title}{'\n'}{result.snippet}{'\n'}{result.url}</p>)}
+              {generationResult.toolCall?.type === 'websearch' && generationResult.toolCall.results.map((result, index) => <p key={index}>{result.title}{'\n'}{result.snippet}{'\n'}{result.url}</p>)}
+              {generationResult.toolCall?.type === 'image' && <>
+                {generationResult.toolCall.error && <p>{generationResult.toolCall.error}</p>}
+                {savedJobImage && <a className="underline" href={savedJobImage} target="_blank" rel="noreferrer"><img src={savedJobImage} alt="Zapisany obraz" className="max-h-32" /></a>}
+                {generationResult.toolCall.prompt && <details><summary>Zapisany prompt obrazu</summary>{generationResult.toolCall.prompt}</details>}
+              </>}
               {generationResult.thinking && <details><summary>Reasoning</summary>{generationResult.thinking}</details>}
             </div>
           </details>

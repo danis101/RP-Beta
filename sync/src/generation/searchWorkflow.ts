@@ -4,6 +4,7 @@ import { searchFollowUp, type SearchResult, type SearchToolCall } from '../../..
 import type { APIToolCall } from '../../../shared/llm/types'
 import type { GenerationWorkflow, WorkflowProgress } from './runner'
 import type { StartJob } from './store'
+import type { ImageToolCall } from '../../../shared/llm/imageTypes'
 
 export interface SearchWorkflowDependencies {
   messages: StartJob['messages']
@@ -11,6 +12,8 @@ export interface SearchWorkflowDependencies {
   search: (query: string, signal: AbortSignal) => Promise<SearchResult[]>
   enabled: () => boolean
   showResults: boolean
+  image?: (signal: AbortSignal, report: (state: WorkflowProgress) => void, label: string) => Promise<ImageToolCall>
+  imageEnabled?: () => boolean
 }
 
 /** Existing sequence: initial LLM, sequential searches, at most one follow-up LLM.
@@ -35,12 +38,21 @@ export function searchWorkflow(deps: SearchWorkflowDependencies): GenerationWork
     const calls = await model(deps.messages)
     const followUps: ReturnType<typeof searchFollowUp>[] = []
     let lastTool: SearchToolCall | undefined
+    let firstImage: ImageToolCall | undefined
     try {
       for (const call of calls) {
         signal.throwIfAborted()
-        if (call.function.name !== 'web_search' || !deps.enabled()) continue
         let args: Record<string, unknown> = {}
         try { args = JSON.parse(call.function.arguments || '{}') ?? {} } catch { /* same fallback as browser */ }
+        if (call.function.name === 'generate_image' && deps.image && deps.imageEnabled?.()) {
+          const image = await deps.image(signal, progress => {
+            state.phase = progress.phase; state.toolCall = progress.toolCall; emit()
+          }, typeof args.description === 'string' ? args.description : '')
+          firstImage ??= image
+          state.toolCall = firstImage; emit()
+          continue
+        }
+        if (call.function.name !== 'web_search' || !deps.enabled()) continue
         const query = typeof args.query === 'string' ? args.query : ''
         state.phase = 'web-search'; emit()
         const results = query.trim() ? await deps.search(query, signal) : []
@@ -61,7 +73,9 @@ export function searchWorkflow(deps: SearchWorkflowDependencies): GenerationWork
       // Initial messages are already normalized and contain a user turn.
       await model(prepareChatMessages([...deps.messages, ...followUps], 'Assistant'))
     }
-    state.toolCall = deps.showResults ? lastTool : undefined
+    // Existing browser path keeps search sources after its follow-up; without
+    // a follow-up the first image takes precedence over search metadata.
+    state.toolCall = followUps.length ? (deps.showResults ? lastTool : undefined) : firstImage ?? (deps.showResults ? lastTool : undefined)
     return state
   }
 }

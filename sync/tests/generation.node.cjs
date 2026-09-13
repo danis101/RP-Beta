@@ -13,7 +13,7 @@ after(() => {
 writeFileSync(path.join(output, 'package.json'), '{"type":"commonjs"}')
 execFileSync(process.execPath, [
   require.resolve('../../frontend/node_modules/typescript/bin/tsc'),
-  'sync/src/generation/store.ts', 'sync/src/generation/runner.ts', 'sync/src/generation/searchWorkflow.ts',
+  'sync/src/generation/store.ts', 'sync/src/generation/runner.ts', 'sync/src/generation/searchWorkflow.ts', 'sync/src/generation/imageWorkflow.ts',
   '--module', 'commonjs', '--target', 'ES2022', '--lib', 'ES2022,DOM', '--strict', '--skipLibCheck', '--rootDir', '.', '--outDir', output,
 ], { cwd: path.join(__dirname, '../..'), stdio: 'pipe' })
 const { GenerationStore } = require(path.join(output, 'sync/src/generation/store.js'))
@@ -21,6 +21,8 @@ const { GenerationRunner } = require(path.join(output, 'sync/src/generation/runn
 const { publicJob } = require(path.join(output, 'sync/src/generation/store.js'))
 const { searchWorkflow } = require(path.join(output, 'sync/src/generation/searchWorkflow.js'))
 const { parseSearchResults, searchFollowUp } = require(path.join(output, 'shared/llm/webSearch.js'))
+const { runImage } = require(path.join(output, 'sync/src/generation/imageWorkflow.js'))
+const { createImageGenerator } = require(path.join(output, 'shared/llm/imageGen.js'))
 
 function setup(t) {
   const sql = new DatabaseSync(':memory:')
@@ -261,4 +263,130 @@ test('workflow migration preserves existing jobs and can be rerun', t => {
   assert.equal(migrated.get('a', job.id).workflow_json, '{}')
   new GenerationStore(port)
   assert.equal(migrated.get('a', job.id).status, 'queued')
+})
+
+test('image pipeline checkpoints exact refined prompt before generation and saves before publishing', async t => {
+  const { store, request, readChat } = setup(t)
+  const job = store.start('a', { ...request, operation: 'image', image: {} }).job
+  let published
+  const done = new Promise(resolve => { published = resolve })
+  const runner = new GenerationRunner(store, published)
+  const events = []
+  runner.start(job, () => assert.fail('no chat model for manual image'), async (signal, report) => ({
+    content: '', thinking: '', phase: 'image-result', toolCall: await runImage({
+      refine: async () => { events.push('refine'); return ' [STYLE: original] exact prompt ' },
+      generate: async prompt => {
+        events.push('generate')
+        assert.equal(prompt, '[STYLE: original] exact prompt')
+        assert.equal(publicJob(store.get('a', job.id)).toolCall.prompt, prompt)
+        assert.equal(readChat().messages.length, 1)
+        return { status: 'done', blob: new Blob(['image'], { type: 'image/png' }) }
+      },
+      save: async () => { events.push('save'); assert.equal(readChat().messages.length, 1); return 'blob-id' },
+    }, signal, report),
+  }))
+  await done
+  assert.deepEqual(events, ['refine', 'generate', 'save'])
+  assert.equal(readChat().messages[1].variants[0].toolCall.imageBlobId, 'blob-id')
+  assert.equal(readChat().messages[1].variants[0].content, '')
+  await new Promise(resolve => setImmediate(resolve))
+})
+
+test('image regeneration verifies saved prompt, bypasses refiner and adds one variant', async t => {
+  const { store, request, readChat, writeChat } = setup(t)
+  const chat = readChat()
+  chat.messages.push({ id: 'image', role: 'assistant', variants: [{ content: '', toolCall: { type: 'image', status: 'done', prompt: ' exact saved prompt ', imageBlobId: 'old' } }], selectedVariant: 0, timestamp: 15 })
+  writeChat(chat)
+  const regen = { ...request, operation: 'image', mode: 'regenerate', targetMessageId: 'image', expectedUpdatedAt: 21, image: { prompt: 'forged' } }
+  assert.throws(() => store.start('a', regen), /Prompt regeneracji/)
+  regen.image.prompt = ' exact saved prompt '
+  store.start('a', regen); store.update('a', regen.id, 'running', '', '')
+  const tool = await runImage({
+    refine: () => assert.fail('regeneration must not refine'),
+    generate: async prompt => { assert.equal(prompt, regen.image.prompt); return { status: 'done', blob: new Blob(['new']) } },
+    save: async () => 'new-blob',
+  }, new AbortController().signal, () => {}, regen.image.prompt)
+  assert.equal(store.complete('a', regen.id, '', '', tool), true)
+  assert.equal(readChat().messages[1].variants.length, 2)
+  assert.equal(readChat().messages[1].variants[0].toolCall.imageBlobId, 'old')
+  assert.equal(readChat().messages[1].variants[1].toolCall.imageBlobId, 'new-blob')
+})
+
+test('manual image accepts an assistant anchor or an empty conversation and detects concurrent additions', t => {
+  const { store, request, readChat, writeChat } = setup(t)
+  const chat = readChat(); chat.messages = []; writeChat(chat)
+  const input = { ...request, operation: 'image', targetMessageId: 'chat', expectedUpdatedAt: 21, image: {} }
+  store.start('a', input); store.update('a', input.id, 'running', '', '')
+  assert.equal(store.complete('a', input.id, '', '', { type: 'image', status: 'done', label: 'image', imageBlobId: 'blob' }), true)
+  const anchor = readChat().messages[0]
+  store.start('a', { ...input, id: 'second', targetMessageId: anchor.id, expectedUpdatedAt: anchor._updatedAt })
+  store.update('a', 'second', 'running', '', '')
+  const changed = readChat(); changed.messages.push({ id: 'new', role: 'user', variants: [{ content: 'new' }] }); writeChat(changed)
+  assert.equal(store.complete('a', 'second', '', '', { type: 'image', status: 'done', label: 'image', imageBlobId: 'second' }), false)
+  assert.equal(store.get('a', 'second').status, 'conflict')
+})
+
+test('image cancellation after refiner never starts generator; processing never submits a duplicate', async () => {
+  const controller = new AbortController()
+  await assert.rejects(runImage({ refine: async () => { controller.abort(); return 'prompt' }, generate: () => assert.fail('cancelled'), save: () => assert.fail('cancelled') }, controller.signal, () => {}))
+  let calls = 0, checkpoint
+  await assert.rejects(runImage({ refine: async () => 'prompt', generate: async () => { calls++; return { status: 'processing' } }, save: () => assert.fail('no image') },
+    new AbortController().signal, state => { checkpoint = state }), /processing/)
+  assert.equal(calls, 1)
+  assert.equal(checkpoint.toolCall.prompt, 'prompt')
+})
+
+test('shared image transport preserves bridge POST and handles URL and base64 responses', async () => {
+  for (const format of ['url', 'b64_json']) {
+    const requests = []
+    const generate = createImageGenerator(() => null, async (url, init) => {
+      requests.push({ url, init })
+      return init?.method === 'POST' ? Response.json({ data: [format === 'url' ? { url: 'http://bridge.test/cdn/picture.png' } : { b64_json: btoa('image') }] })
+        : new Response('image', { headers: { 'Content-Type': 'image/png' } })
+    })
+    const result = await generate('[STYLE: original] prompt', { baseUrl: 'http://bridge.test', responseFormat: format })
+    assert.equal(result.status, 'done')
+    assert.equal(await result.blob.text(), 'image')
+    assert.deepEqual(JSON.parse(requests[0].init.body), { prompt: '[STYLE: original] prompt', n: 1, response_format: format })
+    assert.equal(requests.length, format === 'url' ? 2 : 1)
+    if (format === 'url') assert.equal(requests[1].url, '/images-proxy/cdn/picture.png')
+  }
+})
+
+test('chat image tool runs once, preserves model text, and respects the image toggle', async () => {
+  for (const enabled of [true, false]) {
+    let calls = 0
+    const result = await searchWorkflow({ messages: [{ role: 'user', content: 'draw' }], enabled: () => false, showResults: true,
+      imageEnabled: () => enabled,
+      image: async (_signal, progress) => { calls++; progress({ content: '', thinking: '', phase: 'refiner' }); return { type: 'image', label: 'image', status: 'done', imageBlobId: 'blob' } },
+      open: async () => sse('Here is the scene.', [searchCall('generate_image')]), search: () => assert.fail('no search'),
+    })(new AbortController().signal, () => {})
+    assert.equal(calls, enabled ? 1 : 0)
+    assert.equal(result.content, 'Here is the scene.')
+    assert.equal(result.toolCall?.imageBlobId, enabled ? 'blob' : undefined)
+  }
+})
+
+test('GC protects a conflict image for its owner, but not another user or a deleted chat', async t => {
+  const { sql, port, store, request } = setup(t)
+  sql.exec('ALTER TABLE entities ADD COLUMN blob_id TEXT; CREATE TABLE blobs(user_id TEXT,sha256 TEXT,created_at INTEGER)')
+  const hash = 'a'.repeat(64)
+  sql.prepare('INSERT INTO blobs VALUES(?,?,0)').run('a', hash)
+  sql.prepare('INSERT INTO blobs VALUES(?,?,0)').run('b', hash)
+  const job = store.start('a', request).job
+  store.workflow('a', job.id, 'image-result', { type: 'image', label: 'image', status: 'done', imageBlobId: hash })
+  store.update('a', job.id, 'conflict', '', '')
+  const ts = require('../../frontend/node_modules/typescript')
+  const code = ts.transpileModule(require('node:fs').readFileSync(path.join(__dirname, '../src/gc.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText
+  const module = { exports: {} }, deleted = []
+  require('node:vm').runInNewContext(code, {
+    exports: module.exports, module, console,
+    require: name => name === './db' ? { db: port } : name === './blobs' ? { deleteBlob: async (user, id) => { deleted.push([user, id]) } } : { MIN_BLOB_AGE_MS: 1000, SOFT_DELETE_RETENTION_MS: 1000, GC_INTERVAL_MS: 1000 },
+  })
+  await module.exports.runGarbageCollection()
+  assert.deepEqual(deleted, [['b', hash]])
+  deleted.length = 0
+  sql.prepare("UPDATE entities SET deleted_at=? WHERE user_id='a'").run(Date.now())
+  await module.exports.runGarbageCollection()
+  assert.ok(deleted.some(([user]) => user === 'a'))
 })

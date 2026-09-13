@@ -4,7 +4,7 @@
 
 Telefon wysyła polecenie rozpoczęcia generowania, a serwer prowadzi je i zapisuje wynik niezależnie od połączenia przeglądarki. Po wybudzeniu frontend odczytuje bieżący stan. Nie potrzebujemy aplikacji natywnej do osiągnięcia tego celu.
 
-Stan na 2026-09-13: **tekst i workflow wyszukiwania są podłączone do serwera**. Użytkownik potwierdził tekst i regenerację po zamknięciu przeglądarki. Nowy etap z SearXNG wymaga testu wdrożenia. Działa przy wyłączonym narzędziu obrazów i automatycznych podsumowaniach, bez multimodalnego wejścia. Regeneracja od starszej wiadomości użytkownika zachowuje ścieżkę przeglądarkową. Obrazy i podsumowania nadal wymagają migracji całego workflow; niczego nie wyłączamy automatycznie. Interfejs pokazuje, gdzie trwa wykonanie.
+Stan na 2026-09-13: **tekst, wyszukiwanie i obrazy są podłączone do serwera**. Użytkownik potwierdził tekst i regenerację po zamknięciu przeglądarki, po wdrożeniu wyszukiwania nie zgłosił błędu. Obrazy wymagają testu wdrożenia. Chat korzysta z serwera przy wyłączonych automatycznych podsumowaniach, bez multimodalnego wejścia. Ręczne generowanie i regeneracja obrazu działają na serwerze niezależnie od podsumowań. Regeneracja tekstu od starszej wiadomości użytkownika zachowuje ścieżkę przeglądarkową. Niczego nie wyłączamy automatycznie; interfejs pokazuje miejsce wykonania.
 
 ## Ustalenia z przeglądu kodu
 
@@ -21,7 +21,7 @@ Stan na 2026-09-13: **tekst i workflow wyszukiwania są podłączone do serwera*
 1. **Wspólny odczyt odpowiedzi — wykonany.** Wydzielenie istniejącego parsera SSE, reasoning i typów callbacków z części przeglądarkowej. Dotychczasowe żądania, prompty, narzędzia i sposób zapisu pozostają takie same. Docker kopiuje moduł wspólny do etapu budowania i obrazu serwera.
 2. **Trwałe zadanie tekstowe — zaimplementowane, do weryfikacji na Bun/Docker.** Addytywna tabela SQLite, rozpoczęcie/odczyt/anulowanie zadania, identyfikator ponowienia oraz transakcyjny zapis wyniku do właściwej rozmowy. Testy SQLite i wykonawcy uruchomiono lokalnie w Node 24 z kontrolowanym strumieniem, bez modeli i usług zewnętrznych.
 3. **Podłączenie frontendu — tekst potwierdzony na wdrożeniu.** Start zadania, postęp, odczyt po powrocie do rozmowy, osobny Stop i prezentacja zachowanego wyniku przy błędzie/konflikcie/przerwaniu. Logika obserwacji jest w `useGenerationJob`, poza App.tsx.
-4. **Narzędzia i obrazy — wyszukiwanie zaimplementowane, czeka na test wdrożenia.** Pozostaje refiner, mostek obrazów, bloby i regeneracja na zapisanym prompcie. Filtrowanie narzędzi i kontrola uprawnień przed wykonaniem pozostają obowiązkowe.
+4. **Narzędzia i obrazy — zaimplementowane, obrazy czekają na test wdrożenia.** Refiner, mostek, zapis bloba oraz regeneracja dokładnie na zapisanym prompcie działają w zadaniu. Zachowano pierwszy warunek dostępności narzędzia, osobny profil refinera i kolejność wywołań.
 5. **Domknięcie migracji.** Dwa urządzenia, edycje/usunięcia podczas generowania, przerwanie procesu i rekoncyliacja stanu. Dopiero po tych testach usuwać zastąpione ścieżki wykonania. Podsumowania wymagają osobnego uwzględnienia; nie przenosić przy okazji błędu granicy podsumowania.
 
 ## Zasady projektowe dla kolejnego etapu
@@ -74,7 +74,7 @@ Przykład body rozpoczęcia (identyfikatory i wersja muszą odpowiadać zapisane
 
 `regenerate` wskazuje istniejącą wiadomość assistant i dodaje jej nowy wariant. Frontend najpierw kończy zapis wiadomości użytkownika i przekazuje gotowy prompt po obecnej normalizacji. Backend nie odbudowuje promptu i nie losuje ponownie zmiennych presetu. Jeśli zapis przed regeneracją zmieni historię przez merge, trzeba przejrzeć rozmowę i ponowić generację; nie wysyłamy promptu dla innej wersji wiadomości.
 
-Zapisany profil dostarcza adres, model i parametry samplera. Snapshot wywołania zostaje w bazie; klucze API modelu i SearXNG są używane tylko w pamięci. Opcjonalne `webSearch: true` uruchamia workflow wyszukiwania, jeśli zapisane ustawienia na to pozwalają. Deklaracja narzędzia pochodzi z serwera; frontend nie może przesłać własnego rejestru. Ten etap zawsze odbiera wewnętrzny stream tekstowy; obrazy i multimodalne wejście nadal nie są obsługiwane przez zadania.
+Zapisany profil dostarcza adres, model i parametry samplera. Snapshot wywołania zostaje w bazie; klucze API modelu, refinera i SearXNG są używane tylko w pamięci. Opcjonalne `webSearch: true` i `image` włączają odpowiednie narzędzia zgodnie z zapisanymi ustawieniami. Deklaracje pochodzą z serwera. Multimodalne wejście do modelu czatu nadal nie jest obsługiwane przez zadania.
 
 Timeout jest taki jak dotychczas dla długich POST: `PROXY_TIMEOUT_POST_MS`, domyślnie **600 000 ms (10 minut)**. Nie dodano limitu 60 sekund. Wykonawca stosuje istniejącą politykę adresów i przekierowań przez prywatne wywołanie handlera proxy, bez dodatkowego połączenia HTTP. Rozłączenie telefonu nie anuluje tego wykonania.
 
@@ -84,7 +84,19 @@ Zmieniona/usunięta wiadomość docelowa lub nowa wiadomość dodana podczas zwy
 
 Obserwator odczytuje stan aktywnego zadania co 1,5 s, bez aktywnego zadania co 10 s, dodatkowo po powrocie do widocznej karty/online. Wyłączenie streamingu w profilu ukrywa podgląd tokenów; serwer nadal odbiera stream i zapisuje wynik. Utrata odpowiedzi na POST nie powoduje automatycznego ponowienia ani przejścia na generację w przeglądarce. Wynik trafia do rozmowy tylko przez serwer, a frontend scala odczytaną wersję. Wynik ostatniego nieudanego zadania można rozwinąć nad polem wpisywania; nie jest dopisywany jako nowa wiadomość do promptu.
 
-Pozostają: retencja starych zadań, kolejka wszystkich zapisów rozmowy, migracja obrazów/podsumowań i test wyszukiwania na rzeczywistym backendzie. Test wdrożenia: włączyć wyszukiwanie, wyłączyć obrazy i automatyczne podsumowania, poprosić o wyszukanie informacji, poczekać na komunikat o wyszukiwaniu na serwerze, zamknąć przeglądarkę, sprawdzić pojedynczą końcową odpowiedź i źródła po powrocie. Następnie regeneracja i Stop podczas wyszukiwania. Osobno sprawdzić dotychczasowe gen/regen obrazu.
+Pozostają: retencja starych zadań, kolejka wszystkich zapisów rozmowy, migracja podsumowań/vision i test obrazów na rzeczywistym backendzie. Test wdrożenia: wyłączyć automatyczne podsumowania, włączyć obrazy i wyszukiwanie. Sprawdzić obraz wywołany przez model, ręczny przycisk obrazu, regenerację starego obrazu (bez refinera), zamknięcie przeglądarki w trakcie generowania oraz Stop. Sprawdzić też dotychczasowy tekst i wyszukiwanie.
+
+## Obrazy i bridgev2
+
+Frontend nadal buduje dokładnie ten sam kompaktowy kontekst refinera (karta, persona, wybrany fragment historii, wymagany styl). Przesyła `image: {refinerProfileId, refinerMessages}` jako gotowy snapshot. Serwer wykonuje refiner bez narzędzi, używając jego zapisanego profilu i samplera, następnie wysyła prompt do mostka i zapisuje blob przed opublikowaniem wariantu. Reasoning fallback refinera jest zachowany.
+
+Ręczny obraz używa `operation: "image"`, `mode: "append"`; regeneracja `mode: "regenerate"` i `image: {prompt}`. Backend sprawdza, czy prompt jest dokładnie taki jak w wybranym zapisanym wariancie. Regeneracja nie wymaga ponownego refinera ani włączonego toggle narzędzia modelu. Ręczny obraz można dodać po dowolnej ostatniej wiadomości, także do pustej rozmowy. Konflikt/Stop nie nadpisuje istniejącego wariantu. Zapisany wynik nieudanego zadania można otworzyć w panelu nad polem wpisywania. GC chroni obrazy zachowane w nieudanych/aktywnych zadaniach żywej rozmowy.
+
+Przejrzany mostek: `F:\AI\ComfyUI_windows_portable_nvidia\bridgev2\bridgeimggen.py`. Zwykle zwraca URL `/cdn/...` lub base64. Po 60 próbach historii ComfyUI (około 60 sekund; komentarz 45s jest nieaktualny) zwraca `processing` z `prompt_id`, lecz nie udostępnia endpointu odbioru wyniku po tym zdarzeniu.
+
+Przygotowano osobną poprawkę `bridgev2-wait.patch`: żądania z nagłówkiem `X-RP-Image-Wait-Seconds` mogą dłużej oczekiwać na ten sam `prompt_id`. Bez nagłówka pozostaje dotychczasowe 60 prób, więc TAVO zachowuje dotychczasowy limit. RP wysyła czas wynikający z `PROXY_TIMEOUT_POST_MS` z zapasem 30 sekund (domyślnie 570 sekund). Zastosowanie poprawki i restart mostka są osobnym krokiem poza wdrożeniem Dockera RP. Jeżeli mimo tego mostek zwróci `processing`, zadanie zachowuje prompt i jawnie informuje o braku gotowego obrazu; nie uruchamia drugiej generacji. Stop przerywa odbiór po stronie RP, ale nie obiecuje usunięcia już uruchomionego zadania z kolejki ComfyUI.
+
+Poprawkę zastosowano za zgodą użytkownika do powyższego lokalnego pliku mostka 2026-09-13. Kopia: `bridgeimggen.py.before-rp-wait-20260913-142904.bak` w tym samym katalogu. Sprawdzono składnię Pythona oraz domyślny, poprawny, niepoprawny i nadmierny nagłówek oczekiwania. Proces mostka nie był restartowany.
 
 Workflow zachowuje sekwencyjne wykonanie żądań wyszukiwania i najwyżej jeden dodatkowy przebieg modelu. Nie wykonuje tool calls zwróconych w drugim przebiegu. Wyniki są dołączane w dotychczasowym formacie do zamrożonego promptu, a następnie normalizowane wspólnym `shared/llm/chatCompatibility.ts`. Gotowy wariant otrzymuje źródła zgodnie z `webSearchShowResults`. Podczas pracy nie powstaje tymczasowa wiadomość assistant: postęp jest częścią zadania, a odpowiedź publikowana jest tylko raz.
 

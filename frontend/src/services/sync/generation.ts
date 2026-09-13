@@ -1,4 +1,5 @@
 import { request } from './client'
+import type { ImageInput, WorkflowToolCall } from '../../../../shared/llm/imageTypes'
 
 export interface GenerationJob {
   id: string
@@ -13,8 +14,8 @@ export interface GenerationJob {
   revision: number
   createdAt: number
   updatedAt: number
-  phase?: 'model' | 'web-search' | 'follow-up'
-  toolCall?: { type: 'websearch'; label: string; results: Array<{ title: string; url: string; snippet: string; source: string }> }
+  phase?: string
+  toolCall?: WorkflowToolCall
 }
 
 export interface StartGeneration {
@@ -25,6 +26,8 @@ export interface StartGeneration {
   expectedUpdatedAt: number
   profileId: string
   webSearch?: true
+  image?: ImageInput
+  operation?: 'image'
   messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>
 }
 

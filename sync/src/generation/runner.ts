@@ -1,8 +1,8 @@
 import { readCompletionStream } from '../../../shared/llm/stream'
 import { GenerationStore, type JobRow } from './store'
-import type { SearchToolCall } from '../../../shared/llm/webSearch'
+import type { WorkflowToolCall } from '../../../shared/llm/imageTypes'
 
-export interface WorkflowProgress { content: string; thinking: string; phase: string; toolCall?: SearchToolCall }
+export interface WorkflowProgress { content: string; thinking: string; phase: string; toolCall?: WorkflowToolCall }
 export type GenerationWorkflow = (signal: AbortSignal, progress: (state: WorkflowProgress) => void) => Promise<WorkflowProgress>
 
 /** Owns execution; HTTP handlers only start/observe/cancel. No browser request signal. */
@@ -59,7 +59,7 @@ export class GenerationRunner {
           progress()
         })
         content = result.content; thinking = result.thinking
-        if (!content.trim() && !thinking.trim()) throw new Error('Model nie zwrocil odpowiedzi.')
+        if (!content.trim() && !thinking.trim() && !result.toolCall) throw new Error('Model nie zwrocil odpowiedzi.')
         if (this.store.complete(job.user_id, job.id, content, thinking, result.toolCall)) this.published(job.user_id, job.conversation_id)
         return
       }
