@@ -259,6 +259,12 @@ export default function ToolsSettings() {
                       </option>
                     ))}
                   </select>
+                  <p className="mt-2 text-[11px] text-[#8a8a94]">
+                    Refiner korzysta z limitu kontekstu i odpowiedzi wybranego profilu API.
+                    Dla osobnego modelu ustaw te wartości w jego profilu w ustawieniach modeli AI.
+                    Budżet obejmuje instrukcje, kartę, personę i historię; przy braku miejsca odpadają najstarsze wiadomości.
+                    Liczba tokenów jest szacowana z zapasem 10% — limit profilu powinien odpowiadać kontekstowi ustawionemu na serwerze.
+                  </p>
                 </div>
 
                 <div className="mt-3">
@@ -278,4 +284,3 @@ export default function ToolsSettings() {
     </div>
   )
 }
-

@@ -55,6 +55,8 @@ export const generateImageTool: ToolDef = {
           persona: ctx.persona,
           history: ctx.history,
           contextMessages,
+          contextLength: ctx.refinerContextLength,
+          maxTokens: ctx.refinerMaxTokens,
           imageStyleDirective: ctx.imageStyleDirective,
         },
         refinerPrompt,

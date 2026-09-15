@@ -1,6 +1,7 @@
 import type { ChatMessage, CharacterCard, Persona } from '../types'
 import type { ApiAdapter } from '../services/api'
 import { getContent } from './messages'
+import { estimateRefinerTokens, refinerInputBudget, assertRefinerBudget } from '../../../shared/llm/refinerBudget'
 
 /**
  * Prompt-refiner obrazu: zamienia kontekst rozmowy + kartę postaci na
@@ -22,6 +23,9 @@ export interface RefineContext {
   history: ChatMessage[]
   /** Ile ostatnich wiadomości uwzględnić. */
   contextMessages: number
+  /** Context window of the selected API profile, including output tokens. */
+  contextLength?: number
+  maxTokens?: number
   /**
    * Wymuszony styl obrazu dla tej rozmowy (z listy `imageGenCustomStyles`
    * w Settings). Pusty/undefined = brak wymuszenia.
@@ -29,25 +33,6 @@ export interface RefineContext {
   imageStyleDirective?: string
 }
 
-/** Limit znaków na pojedyncze pole karty. */
-const FIELD_MAX = 4000
-/** Limit łączny znaków na cały opis karty. */
-const CARD_BUDGET = 12_000
-/** Limit znaków na historię rozmowy. */
-const HISTORY_BUDGET = 8_000
-/** Limit znaków na pojedynczą wiadomość w historii. */
-const MESSAGE_MAX = 1_500
-/** Maksymalna liczba wpisów character_book branych pod uwagę. */
-const MAX_BOOK_ENTRIES = 20
-/** Limit znaków na pojedynczy wpis lorebooka. */
-const BOOK_ENTRY_MAX = 400
-
-function truncate(text: string | undefined, max: number): string {
-  if (!text) return ''
-  const trimmed = text.trim()
-  if (trimmed.length <= max) return trimmed
-  return trimmed.slice(0, max) + '…'
-}
 
 /**
  * Buduje kompaktowy opis karty — tylko to, co potrzebne do wygenerowania
@@ -57,7 +42,7 @@ function buildCompactCard(card: CharacterCard): string {
   const parts: string[] = []
 
   const push = (label: string, value: string | undefined) => {
-    const v = truncate(value, FIELD_MAX)
+    const v = value?.trim()
     if (v) parts.push(`${label}: ${v}`)
   }
 
@@ -69,8 +54,8 @@ function buildCompactCard(card: CharacterCard): string {
   const entries = card.characterBook?.entries ?? []
   if (entries.length > 0) {
     const snippets: string[] = []
-    for (const entry of entries.slice(0, MAX_BOOK_ENTRIES)) {
-      const content = truncate(entry.content, BOOK_ENTRY_MAX)
+    for (const entry of entries) {
+      const content = entry.content?.trim()
       if (content) snippets.push(`- ${content}`)
     }
     if (snippets.length > 0) {
@@ -78,16 +63,12 @@ function buildCompactCard(card: CharacterCard): string {
     }
   }
 
-  let out = parts.join('\n\n')
-  if (out.length > CARD_BUDGET) {
-    out = out.slice(0, CARD_BUDGET) + '…'
-  }
-  return out
+  return parts.join('\n\n')
 }
 
 function buildCompactPersona(persona: Persona | undefined): string | undefined {
   if (!persona) return undefined
-  const description = truncate(persona.description, FIELD_MAX)
+  const description = persona.description?.trim()
   if (!description) return `Imię: ${persona.name}`
   return `Imię: ${persona.name}\n${description}`
 }
@@ -100,15 +81,12 @@ function buildHistoryText(
 ): string {
   const recent = history.slice(-Math.max(1, contextMessages))
   const lines: string[] = []
-  let used = 0
   for (const m of recent) {
     const role = m.role === 'assistant' ? character.name : (persona?.name ?? 'Użytkownik')
-    const content = truncate(getContent(m), MESSAGE_MAX)
+    const content = getContent(m).trim()
     if (!content) continue
     const line = `${role}: ${content}`
-    if (used + line.length > HISTORY_BUDGET) break
     lines.push(line)
-    used += line.length
   }
   return lines.join('\n')
 }
@@ -121,6 +99,21 @@ export function buildImageRefinerMessages(
   ctx: RefineContext,
   systemPrompt: string,
 ): { system: string; user: string }[] {
+  const budget = refinerInputBudget(ctx.contextLength, ctx.maxTokens)
+  // Drop only whole oldest messages. Never silently cut descriptions or the
+  // newest turn; that can change the scene being illustrated.
+  let history = ctx.history.slice(-Math.max(1, ctx.contextMessages))
+  while (true) {
+    const messages = assembleRefinerMessages({ ...ctx, history }, systemPrompt)
+    if (estimateRefinerTokens(messages[0].system + messages[0].user) <= budget) return messages
+    // Validate only when the refiner actually runs. Merely enabling the image
+    // tool must not prevent an ordinary text answer from starting.
+    if (history.length <= 1) return messages
+    history = history.slice(1)
+  }
+}
+
+function assembleRefinerMessages(ctx: RefineContext, systemPrompt: string): { system: string; user: string }[] {
   const cardText = buildCompactCard(ctx.character)
   const personaText = buildCompactPersona(ctx.persona)
   const historyText = buildHistoryText(ctx.history, ctx.character, ctx.persona, ctx.contextMessages)
@@ -166,6 +159,7 @@ export async function refineImagePrompt(
   signal?: AbortSignal,
 ): Promise<string> {
   const [req] = buildImageRefinerMessages(ctx, systemPrompt)
+  assertRefinerBudget(req.system + req.user, ctx.contextLength, ctx.maxTokens)
 
   if (import.meta.env.DEV) {
     const totalChars = req.system.length + req.user.length
@@ -189,4 +183,3 @@ export async function refineImagePrompt(
 
   return prompt
 }
-

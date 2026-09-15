@@ -13,6 +13,7 @@ after(() => {
 writeFileSync(path.join(output, 'package.json'), '{"type":"commonjs"}')
 execFileSync(process.execPath, [
   require.resolve('../../frontend/node_modules/typescript/bin/tsc'),
+  'shared/llm/refinerBudget.ts',
   'sync/src/generation/store.ts', 'sync/src/generation/runner.ts', 'sync/src/generation/searchWorkflow.ts', 'sync/src/generation/imageWorkflow.ts', 'sync/src/generation/summaryPlan.ts', 'sync/src/generation/retention.ts',
   '--module', 'commonjs', '--target', 'ES2022', '--lib', 'ES2022,DOM', '--strict', '--skipLibCheck', '--rootDir', '.', '--outDir', output,
 ], { cwd: path.join(__dirname, '../..'), stdio: 'pipe' })

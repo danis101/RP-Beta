@@ -535,7 +535,8 @@ export default function App() {
 
   const imageInput = (history: ChatMessage[], contextMessages = settings.imageGenContextMessages ?? 6): NonNullable<StartGeneration['image']> => {
     const [input] = buildImageRefinerMessages({ character: activeCharacter!, persona: activePersona,
-      history, contextMessages, imageStyleDirective: activeConversation?.imageStyleId }, settings.imageGenRefinerPrompt)
+      history, contextMessages, contextLength: refinerProfile?.contextLength, maxTokens: refinerProfile?.maxTokens,
+      imageStyleDirective: activeConversation?.imageStyleId }, settings.imageGenRefinerPrompt)
     return { refinerProfileId: refinerProfile?.id ?? 'unconfigured', refinerMessages: [
       { role: 'system', content: input.system }, { role: 'user', content: input.user },
     ] }
@@ -746,6 +747,8 @@ export default function App() {
         },
         refinerAdapter,
         refinerModel: refinerProfile?.model,
+        refinerContextLength: refinerProfile?.contextLength,
+        refinerMaxTokens: refinerProfile?.maxTokens,
         imageStyleDirective: activeConversation?.imageStyleId,
       }
 

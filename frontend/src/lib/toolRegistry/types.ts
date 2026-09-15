@@ -13,6 +13,8 @@ export interface ToolContext {
   refinerAdapter?: ApiAdapter
   /** Model, którego ma użyć refiner (nadpisuje profil). */
   refinerModel?: string
+  refinerContextLength?: number
+  refinerMaxTokens?: number
   /**
    * Wymuszony styl obrazu dla tej rozmowy (z `Conversation.imageStyleId`).
    * Przekazywany do refinera jako twarda dyrektywa.

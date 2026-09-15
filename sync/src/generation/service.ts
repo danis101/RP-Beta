@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { assertRefinerBudget } from '../../../shared/llm/refinerBudget'
 import { db } from '../db'
 import { broadcast } from '../ws'
 import { makeProxyHandler } from '../proxy'
@@ -179,6 +180,7 @@ export function createImageExecution(userId: string, input: ImageInput, settings
     refine: async currentSignal => {
       if (!imageEnabled(userId)) throw new Error('Generowanie obrazów zostało wyłączone.')
       if (!refinerBase || !profile?.model) throw new Error('Brak skonfigurowanego profilu refinera.')
+      assertRefinerBudget((input.refinerMessages ?? []).map(message => message.content).join(''), profile.contextLength, profile.maxTokens)
       const response = await openModelResponse(userId, refinerBase, profile.apiKey ?? '', refinerBody, currentSignal)
       if (!response.ok) throw new Error(`Refiner: HTTP ${response.status} ${(await response.text()).slice(0, 600)}`)
       const data = await response.json() as any
