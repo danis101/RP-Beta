@@ -1428,12 +1428,7 @@ export default function App() {
               streamingText={isGenerationActive(serverGeneration.job) ? (activeProfile?.streamingEnabled === false || serverGeneration.job?.operation === 'summary' ? '' : serverGeneration.job!.content) : streamingText}
               replacingMessageId={isGenerationActive(serverGeneration.job) && serverGeneration.job?.mode === 'regenerate' ? serverGeneration.job.targetMessageId : replacingMessageId}
               generationNotice={serverGeneration.notice || (isGenerationActive(serverGeneration.job)
-                ? serverGeneration.job?.phase === 'web-search' ? 'Wyszukiwanie na serwerze — możesz wygasić ekran.'
-                  : serverGeneration.job?.operation === 'summary' ? 'Podsumowanie pamięci na serwerze — możesz wygasić ekran.'
-                  : serverGeneration.job?.phase === 'refiner' ? 'Refiner przygotowuje prompt na serwerze — możesz wygasić ekran.'
-                  : serverGeneration.job?.phase?.startsWith('image-') ? 'Generowanie i zapis obrazu na serwerze — możesz wygasić ekran.'
-                  : serverGeneration.job?.phase === 'follow-up' ? 'Odpowiedź z wynikami wyszukiwania na serwerze — możesz wygasić ekran.'
-                  : 'Generowanie na serwerze — możesz wygasić ekran.'
+                ? ''
                 : isTyping || toolRunning ? 'Ten workflow działa jeszcze w przeglądarce — pozostaw ją aktywną.' : '')}
               generationResult={serverGeneration.job && !isGenerationActive(serverGeneration.job) && serverGeneration.job.status !== 'succeeded' ? serverGeneration.job : null}
               onSend={handleSend}

@@ -12,7 +12,9 @@ html, body {
 }
 
 #root {
-  position: absolute;
+  /* Keyboard focus may scroll the document on mobile. Keep the app anchored
+     to the layout viewport; --app-top follows visualViewport.offsetTop. */
+  position: fixed;
   top: var(--app-top, 0px);
   width: 100%;
   height: 100vh;
@@ -32,6 +34,7 @@ html, body {
 .mobile-nav { padding-bottom: env(safe-area-inset-bottom); }
 
 .chat-messages { overflow-wrap: anywhere; }
+.chat-input { max-height: min(200px, calc(var(--app-height, 100dvh) * 0.25)); }
 .chat-messages img { max-width: min(280px, 100%); }
 .chat-messages pre, .chat-messages table { max-width: 100%; overflow-x: auto; }
 

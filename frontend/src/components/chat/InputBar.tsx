@@ -226,7 +226,7 @@ export default function InputBar({
           }}
           placeholder={t('chatPlaceholder')}
           rows={1}
-          className="max-h-[min(200px,25dvh)] min-w-0 flex-1 resize-none rounded-2xl border border-[#2a2a31] bg-surface-dark px-3 py-2.5 text-base leading-relaxed text-[#e8e8eb] outline-none transition-colors placeholder:text-[#75757f] focus:border-accent md:px-4 md:text-[13.5px]"
+          className="chat-input min-w-0 flex-1 resize-none rounded-2xl border border-[#2a2a31] bg-surface-dark px-3 py-2.5 text-base leading-relaxed text-[#e8e8eb] outline-none transition-colors placeholder:text-[#75757f] focus:border-accent md:px-4 md:text-[13.5px]"
         />
 
         {isGenerating ? (

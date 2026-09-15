@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import { Globe, ChevronDown, ExternalLink, Search, AlertCircle, Loader2, ImageOff } from 'lucide-react'
 import type { ChatMessage, ToolCall } from '../../types'
 import { getSelectedVariant } from '../../lib/messages'
@@ -30,7 +30,7 @@ interface ChatBubbleProps {
  * To rozwiazuje problem krotkich wiadomosci ("jeszcze jeden") ktore
  * wczesniej lamaly sie na dwie linie przez podwojny max-w i min-w-0.
  */
-export default function ChatBubble({ message, tokens }: ChatBubbleProps) {
+function ChatBubble({ message, tokens }: ChatBubbleProps) {
   const { settings } = useSettings()
   const isUser = message.role === 'user'
   const variant = getSelectedVariant(message)
@@ -179,6 +179,10 @@ export default function ChatBubble({ message, tokens }: ChatBubbleProps) {
   )
 }
 
+// Existing messages need no reformatting when only generation progress changes.
+// Context updates (settings) and local state (thinking/lightbox) still render.
+export default memo(ChatBubble)
+
 /**
  * Obrazek tool call renderowany wewnatrz dymka (gdy jest tez tekst).
  */
@@ -304,4 +308,3 @@ function AttachmentImage({
     />
   )
 }
-

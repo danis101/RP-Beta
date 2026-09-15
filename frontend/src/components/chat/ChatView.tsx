@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { X, MoreVertical, Trash2, Check, X as XIcon, UserRound, Palette, BookOpen, Eye, Database, RotateCcw, Wand2, ArrowLeft } from 'lucide-react'
 import type { CharacterCard, ChatMessage, Persona, StylePreset, Lorebook, MessageAttachment } from '../../types'
 import { useI18n } from '../../i18n'
@@ -119,11 +119,11 @@ export default function ChatView({
 
   const touchRef = useRef<{ id: string; x: number; y: number } | null>(null)
 
-  const tokenContext: TokenContext = {
+  const tokenContext: TokenContext = useMemo(() => ({
     charName: character.name,
     userName: persona.name,
     personaName: persona.name,
-  }
+  }), [character.name, persona.name])
 
   useEffect(() => {
     followBottomRef.current = true
