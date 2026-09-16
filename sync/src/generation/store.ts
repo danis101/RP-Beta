@@ -145,7 +145,9 @@ export class GenerationStore {
         if (!summary) throw new JobError('Model zwrocil puste podsumowanie.', 400)
         const now = Math.max(Date.now(), row!.updated_at + 1)
         const boundary = snapshot.messages.length - 1
-        conversation.longTermMemory.push({ id: job.result_message_id, content: summary, timestamp: now, messageIndex: boundary })
+        // Memory is a single current state. The prompt that produced this
+        // result already contained the previous state and new messages.
+        conversation.longTermMemory = [{ id: job.result_message_id, content: summary, timestamp: now, messageIndex: boundary }]
         conversation.lastSummarizedIndex = boundary
         this.db.run("UPDATE entities SET data_json=?,updated_at=? WHERE user_id=? AND type='conversation' AND id=? AND deleted_at IS NULL", [JSON.stringify(conversation), now, userId, job.conversation_id])
         this.update(userId, id, 'succeeded', content, thinking)

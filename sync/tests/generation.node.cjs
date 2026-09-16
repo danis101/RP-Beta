@@ -463,6 +463,10 @@ test('historical user generation appends at the current end without removing int
 test('summary writes memory once and only advances to its actual captured boundary', t => {
   const { store, request, readChat, writeChat } = setup(t)
   const chat = readChat(); chat.lastSummarizedIndex = -1
+  chat.longTermMemory = [
+    { id: 'oldest', content: 'oldest state', timestamp: 5, messageIndex: 0 },
+    { id: 'current', content: 'current state', timestamp: 10, messageIndex: 0 },
+  ]
   chat.messages.push({ id: 'answer', role: 'assistant', variants: [{ content: 'answer' }], selectedVariant: 0 })
   writeChat(chat)
   const input = { ...request, operation: 'summary', targetMessageId: 'answer', expectedUpdatedAt: 21 }
@@ -473,6 +477,7 @@ test('summary writes memory once and only advances to its actual captured bounda
   assert.equal(readChat().messages.length, 3)
   assert.equal(readChat().longTermMemory.length, 1)
   assert.equal(readChat().longTermMemory[0].content, 'memory')
+  assert.notEqual(readChat().longTermMemory[0].id, 'current')
   assert.equal(readChat().longTermMemory[0].messageIndex, 1)
   assert.equal(readChat().lastSummarizedIndex, 1)
 })
@@ -496,11 +501,11 @@ test('summary planning preserves threshold, message count, names, selected varia
   const conversation = { lastSummarizedIndex: -1, messages: [
     { id: '1', role: 'user', variants: [{ content: 'first' }], selectedVariant: 0 },
     { id: '2', role: 'assistant', variants: [{ content: 'unused' }, { content: 'selected' }], selectedVariant: 1 },
-  ], longTermMemory: [{ content: ' old memory ' }] }
+  ], longTermMemory: [{ content: ' obsolete memory ' }, { content: ' current memory ' }] }
   const settings = { summarizerEnabled: true, summarizerThreshold: 2, summarizerMessageCount: 1, summarizerPrompt: 'system unchanged' }
   const plan = prepareSummary(conversation, settings, { name: 'Character' }, { name: 'Persona' }, true)
   assert.equal(plan[0].content, 'system unchanged')
-  assert.equal(plan[1].content, 'Aktualne podsumowanie:\nold memory\n\nOto nowe wiadomości:\n\nCharacter: selected\n\nZaktualizuj podsumowanie, uwzględniając nowe wydarzenia.')
+  assert.equal(plan[1].content, 'Aktualne podsumowanie:\ncurrent memory\n\nOto nowe wiadomości:\n\nCharacter: selected\n\nZaktualizuj podsumowanie, uwzględniając nowe wydarzenia.')
   assert.equal(prepareSummary(conversation, { ...settings, summarizerEnabled: false }, { name: 'C' }, undefined, true), null)
   assert.equal(prepareSummary(conversation, { ...settings, summarizerThreshold: 3 }, { name: 'C' }, undefined, true), null)
   assert.ok(prepareSummary(conversation, { ...settings, summarizerEnabled: false }, { name: 'C' }, undefined, false))

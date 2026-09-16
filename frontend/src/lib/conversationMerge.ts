@@ -13,7 +13,7 @@
  *
  * Ustawienia konwersacji (personaId, styleId, lorebookIds): wygrywa B
  * (bo user przed chwila cos zmienil). Long-term memory: wygrywa ta wersja
- * ktora ma wiecej wpisow (bogatsza historia).
+ * ktora ma nowszy aktualny blok.
  *
  * Zwrocona konwersacja ma `_serverUpdatedAt` z remote (swiezy timestamp),
  * zeby retry z nowym `_expectedUpdatedAt` mial szanse przejsc.
@@ -55,11 +55,15 @@ export function mergeConversations(local: Conversation, remote: Conversation): C
     styleId: local.styleId ?? remote.styleId,
     lorebookIds: local.lorebookIds ?? remote.lorebookIds,
 
-    // Long-term memory: wybieramy bogatsza historie.
-    longTermMemory:
-      local.longTermMemory.length >= remote.longTermMemory.length
-        ? local.longTermMemory
-        : remote.longTermMemory,
+    // Pamięć jest jednym stanem. Dla starych danych ostatni blok jest tym,
+    // który brał udział w następnym podsumowaniu.
+    longTermMemory: (() => {
+      const localMemory = local.longTermMemory[local.longTermMemory.length - 1]
+      const remoteMemory = remote.longTermMemory[remote.longTermMemory.length - 1]
+      if (!localMemory) return remoteMemory ? [remoteMemory] : []
+      if (!remoteMemory || localMemory.timestamp > remoteMemory.timestamp) return [localMemory]
+      return [remoteMemory]
+    })(),
     lastSummarizedIndex: Math.max(local.lastSummarizedIndex, remote.lastSummarizedIndex),
 
     // Server-assigned metadane: z remote (swieze).

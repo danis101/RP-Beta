@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { X, MoreVertical, Trash2, Check, X as XIcon, UserRound, Palette, BookOpen, Eye, Database, RotateCcw, Wand2, ArrowLeft } from 'lucide-react'
+import { MoreVertical, Trash2, Check, X as XIcon, UserRound, Palette, BookOpen, Eye, Database, RotateCcw, Wand2, ArrowLeft } from 'lucide-react'
 import type { CharacterCard, ChatMessage, Persona, StylePreset, Lorebook, MessageAttachment } from '../../types'
 import { useI18n } from '../../i18n'
 import { getContent } from '../../lib/messages'
@@ -32,7 +32,6 @@ interface ChatViewProps {
   onSwitchVariant: (messageId: string, delta: -1 | 1) => void
   onSwipeNext?: (messageId: string) => void
   onSwipePrev?: (messageId: string) => void
-  onCloseSummary: () => void
   onDeleteConversation: () => void
   onPickPersona: (personaId: string | null) => void
   onPickStyle: (styleId: string | null) => void
@@ -41,8 +40,6 @@ interface ChatViewProps {
   onShowPrompt: () => void
   onManualSummarize: () => void
   onOpenMemoryEditor: () => void
-  showSummary: boolean
-  summaryText?: string
   availablePersonas: Persona[]
   availableStyles: StylePreset[]
   availableLorebooks: Lorebook[]
@@ -80,7 +77,6 @@ export default function ChatView({
   onSwitchVariant,
   onSwipeNext,
   onSwipePrev,
-  onCloseSummary,
   onDeleteConversation,
   onPickPersona,
   onPickStyle,
@@ -89,8 +85,6 @@ export default function ChatView({
   onShowPrompt,
   onManualSummarize,
   onOpenMemoryEditor,
-  showSummary,
-  summaryText,
   availablePersonas,
   availableStyles,
   availableLorebooks,
@@ -419,19 +413,6 @@ export default function ChatView({
           )}
         </div>
       </div>
-
-      {/* Summarizer – wyswietlanie podsumowania */}
-      {showSummary && summaryText && (
-        <div className="mx-3 mt-2 flex max-h-[20%] shrink-0 items-start gap-2 overflow-y-auto rounded-xl border border-[#252b45] bg-[#161a2a] px-3 py-2 md:mx-5 md:mt-3 md:px-4 md:py-3.5">
-          <p className="flex-1 text-[12.5px] leading-relaxed text-[#b8bdd0]">{summaryText}</p>
-          <button
-            onClick={onCloseSummary}
-            className="rounded p-0.5 text-[#5a5f78] transition-colors hover:text-[#e8e8eb]"
-          >
-            <X size={14} />
-          </button>
-        </div>
-      )}
 
       {/* Wiadomosci */}
       <div

@@ -106,6 +106,18 @@ test('keeps existing conversation settings and memory merge policy, and remote r
   assert.equal(result._serverCreatedAt, 1)
 })
 
+test('keeps one newest current memory block and collapses legacy history during a merge', () => {
+  const local = conversation([], { longTermMemory: [
+    { id: 'old', content: 'old state', timestamp: 1, messageIndex: 0 },
+    { id: 'local', content: 'local state', timestamp: 20, messageIndex: 1 },
+  ] })
+  const remote = conversation([], { longTermMemory: [
+    { id: 'remote', content: 'remote state', timestamp: 30, messageIndex: 2 },
+  ] })
+  assert.deepEqual(merge(local, remote).longTermMemory.map(entry => entry.content), ['remote state'])
+  assert.deepEqual(merge(remote, local).longTermMemory.map(entry => entry.content), ['remote state'])
+})
+
 test('merge is repeatable and does not modify its inputs', () => {
   const local = conversation([message('a', 10, { _updatedAt: 30 })], { _deletedMessageIds: ['b'] })
   const remote = conversation([message('a'), message('b', 20)])

@@ -4,7 +4,6 @@ import type {
   ChatMessage,
   Conversation,
   Persona,
-  LongTermMemoryEntry,
   MessageAttachment,
   MessageVariant,
   WebSearchResult,
@@ -107,7 +106,6 @@ export default function App() {
   const [isTyping, setIsTyping] = useState(false)
   const [streamingText, setStreamingText] = useState('')
   const [replacingMessageId, setReplacingMessageId] = useState<string | null>(null)
-  const [hiddenSummaries, setHiddenSummaries] = useState<Set<string>>(new Set())
   const [lastPrompt, setLastPrompt] = useState<{ messages: OpenAIMessage[]; model: string } | null>(null)
   const [summarizing, setSummarizing] = useState(false)
   const [toolRunning, setToolRunning] = useState(false)
@@ -457,8 +455,10 @@ export default function App() {
 
     const activated = activateLorebooks(activeLorebooks, slicedHistory)
 
-    const memoryEntries = activeConversation?.longTermMemory ?? []
-    const longTermMemoryText = memoryEntries.map((e) => e.content.trim()).join('\n\n')
+    // Older conversations may still contain historical blocks. Only the last
+    // one was used to create subsequent summaries, so it is the current state.
+    const longTermMemory = activeConversation?.longTermMemory ?? []
+    const longTermMemoryText = longTermMemory[longTermMemory.length - 1]?.content.trim() ?? ''
     const hasMemoryMarker = activeStylePreset?.style.prompts.some(
       (b) => b.marker && b.identifier === 'longTermMemory' && b.enabled,
     )
@@ -1332,12 +1332,15 @@ export default function App() {
     await startImageJob('append')
   }
 
-  const handleUpdateMemory = (entries: LongTermMemoryEntry[]) => {
+  const handleUpdateMemory = (content: string | null) => {
     if (!activeConversation) return
     setConversations((prev) =>
       prev.map((c) => {
         if (c.id !== activeId) return c
-        const updated: Conversation = { ...c, longTermMemory: entries }
+        const current = c.longTermMemory[c.longTermMemory.length - 1]
+        const updated: Conversation = { ...c, longTermMemory: content
+          ? [{ id: current?.id ?? crypto.randomUUID(), content, timestamp: Date.now(), messageIndex: current?.messageIndex ?? -1 }]
+          : [] }
         persistConversation(updated)
         return updated
       }),
@@ -1442,16 +1445,6 @@ export default function App() {
               onSwitchVariant={handleSwitchVariant}
               onSwipeNext={handleSwipeNext}
               onSwipePrev={handleSwipePrev}
-              showSummary={!hiddenSummaries.has(activeConversation.id)}
-              summaryText={
-                activeConversation.longTermMemory.length > 0
-                  ? activeConversation.longTermMemory[activeConversation.longTermMemory.length - 1]
-                      .content
-                  : undefined
-              }
-              onCloseSummary={() =>
-                setHiddenSummaries((prev) => new Set(prev).add(activeConversation.id))
-              }
               onDeleteConversation={() => handleDeleteConversation(activeConversation.id)}
               onPickPersona={handlePickPersona}
               onPickStyle={handlePickStyle}
@@ -1514,7 +1507,7 @@ export default function App() {
 
       {memoryEditorOpen && activeConversation && (
         <LongTermMemoryEditor
-          entries={activeConversation.longTermMemory}
+          entry={activeConversation.longTermMemory[activeConversation.longTermMemory.length - 1]}
           onUpdate={handleUpdateMemory}
           onClose={() => setMemoryEditorOpen(false)}
         />
